@@ -53,7 +53,7 @@ monitor_speed = 115200
 lib_deps =
   miguelbalboa/MFRC522 @ ^1.4.10
 
-Passos de Uso
+### Passos de Uso
 
 Instalar PlatformIO (VS Code).
 
@@ -65,7 +65,7 @@ Compilar e fazer upload do firmware.
 
 Abrir Serial Monitor (9600) para acompanhar leituras e registros.
 
-Observações Técnicas
+### Observações Técnicas
 
 Comparação de UIDs em minúsculas com trim() para evitar problemas de CRLF.
 
