@@ -41,7 +41,7 @@ data/
 platformio.ini
 README.md
 
-Dependências (PlatformIO)
+### Dependências (PlatformIO)
 
 platformio.ini (exemplo):
 
