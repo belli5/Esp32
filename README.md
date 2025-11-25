@@ -11,7 +11,7 @@ Atualmente, o controle de acesso na portaria é predominantemente manual, basead
 ## Proposta do Projeto
 
 Desenvolver um sistema de registro de entrada e saída baseado em identificação digital - pulseira, cartão NFC/RFID - integrado a leitores na portaria, substituindo o controle manual por um processo automatizado. 
-
+#
 
 ### Especificações do Projeto
 
