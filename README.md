@@ -55,22 +55,24 @@ monitor_speed = 115200
 lib_deps =
   miguelbalboa/MFRC522 @ ^1.4.10
 
+#
+
 ### Passos de Uso
 
-Instalar PlatformIO (VS Code).
+1. Instalar PlatformIO (VS Code).
 
-Configurar pinos conforme a seção “Ligações”.
+2. Configurar pinos conforme a seção “Ligações”.
 
-(Opcional) Colocar cards.txt e admins.txt em data/ e fazer upload do FS (SPIFFS).
+- (Opcional) Colocar cards.txt e admins.txt em data/ e fazer upload do FS (SPIFFS).
 
-Compilar e fazer upload do firmware.
+3. Compilar e fazer upload do firmware.
 
-Abrir Serial Monitor (9600) para acompanhar leituras e registros.
+4. Abrir Serial Monitor (9600) para acompanhar leituras e registros.
 
 ### Observações Técnicas
 
-Comparação de UIDs em minúsculas com trim() para evitar problemas de CRLF.
+- Comparação de UIDs em minúsculas com trim() para evitar problemas de CRLF.
 
-A remoção de UID procura primeiro em cards.txt; se não encontrar, procura em admins.txt. Só informa “não encontrado” se ausente em ambos.
+- A remoção de UID procura primeiro em cards.txt; se não encontrar, procura em admins.txt. Só informa “não encontrado” se ausente em ambos.
 
-Manter GND comum e alimentação 3V3 estável; cabos curtos no SPI.
+- Manter GND comum e alimentação 3V3 estável; cabos curtos no SPI.
