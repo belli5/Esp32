@@ -1,4 +1,4 @@
-// src/styled.js
+// src/firstPage.styles.js
 import styled from "styled-components";
 
 export const PageWrapper = styled.div`
@@ -15,10 +15,61 @@ export const Card = styled.div`
   max-width: 900px;
   background: #ffffff;
   border-radius: 24px;
-  padding: 48px 40px 40px;
+  padding: 32px 32px 40px; /* IGUAL AO CADASTRO */
   box-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
   text-align: center;
 `;
+
+
+/* ---------- NOVO: barra de abas ---------- */
+
+export const TabsBar = styled.div`
+  margin-bottom: 32px;
+  display: flex;
+  justify-content: center;
+`;
+
+export const TabsTrack = styled.div`
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  width: 260px;
+  padding: 4px;
+  background: #e5e7eb;
+  border-radius: 999px;
+`;
+
+export const Slider = styled.div`
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc((100% - 8px) / 3);
+  height: calc(100% - 8px);
+  border-radius: 999px;
+  background: #0b5cff;
+
+  /* 0, 100%, 200% – anda “uma largura” por índice */
+  transform: translateX(${({ activeIndex }) => activeIndex * 100}%);
+  transition: transform 0.25s ease;
+  z-index: 0;
+`;
+
+export const TabButton = styled.button`
+  position: relative;
+  z-index: 1;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 8px 0;
+  border-radius: 999px;
+  color: ${({ active }) => (active ? "#ffffff" : "#4b5563")};
+  transition: color 0.2s ease;
+  font-family: inherit;
+`;
+
+/* ---------- resto que você já tinha ---------- */
 
 export const Title = styled.h1`
   font-size: 40px;

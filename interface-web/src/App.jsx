@@ -4,12 +4,18 @@ import './App.css'
 
 // páginas (vamos criar já já)
 import FirstPage  from './pages/firstPage/firstPage'
+import Cadastrar from './pages/Cadastro/cadastro'
+import Entrada from './pages/Entrada/entrada'
+import Saida from './pages/Saida/saida'
 
 function App() {
   return (
     <>
       <Routes>
         <Route path="/" element={<FirstPage />} />
+        <Route path="/cadastro" element={<Cadastrar />} />
+        <Route path="/entrada" element={<Entrada />} />
+        <Route path="/saida" element={<Saida />} />
       </Routes>
     </>
   )

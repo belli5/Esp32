@@ -1,0 +1,182 @@
+import React, { useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+
+import {
+  PageWrapper,
+  Card,
+  Title,
+  Subtitle,
+  TabsBar,
+  TabsTrack,
+  Slider,
+  TabButton,
+  StepsGrid,
+  StepCard,
+  StepHeader,
+  StepTitle,
+  StepDescription,
+  StepStatusRow,
+  LedDot,
+  StepStatusText,
+  StepButtonsRow,
+  StepButton,
+  GlobalStatusArea,
+  GlobalStatusBadge,
+  GlobalStatusText,
+  BackButton,
+} from "./saida.styles";
+
+export default function Saida() {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const activeIndex = location.pathname === "/cadastro" ? 1 : 0;
+
+  // agora só 2 etapas: funcionário e responsável
+  const [employeeStatus, setEmployeeStatus] = useState("waiting");
+  const [parentStatus, setParentStatus] = useState("idle");
+
+  const goHome = () => navigate("/");
+  const goCadastro = () => navigate("/cadastro");
+  const goDashboard = () => navigate("/dashboard");
+
+  const allOk = employeeStatus === "success" && parentStatus === "success";
+
+  const canEmployee = true;
+  const canParent = employeeStatus === "success";
+
+  const textByStatus = {
+    idle: "Aguardando início desta etapa.",
+    waiting: "Aproxime o cartão do leitor.",
+    success: "Cartão validado com sucesso.",
+    error: "Erro na leitura. Tente novamente.",
+  };
+
+  // FUNCIONÁRIO
+  function okEmployee() {
+    if (!canEmployee) return;
+    setEmployeeStatus("success");
+    if (parentStatus === "idle") setParentStatus("waiting");
+  }
+  function errorEmployee() {
+    if (!canEmployee) return;
+    setEmployeeStatus("error");
+  }
+
+  // PAI / RESPONSÁVEL
+  function okParent() {
+    if (!canParent) return;
+    setParentStatus("success");
+  }
+  function errorParent() {
+    if (!canParent) return;
+    setParentStatus("error");
+  }
+
+  return (
+    <PageWrapper>
+      <Card>
+        <BackButton onClick={goHome}>← home</BackButton>
+        {/* Tabs topo */}
+        <TabsBar>
+          <TabsTrack>
+            <Slider activeIndex={activeIndex} />
+
+            <TabButton type="button" active={activeIndex === 0} onClick={goHome}>
+              Home
+            </TabButton>
+
+            <TabButton
+              type="button"
+              active={activeIndex === 1}
+              onClick={goCadastro}
+            >
+              Cadastro
+            </TabButton>
+
+            <TabButton
+              type="button"
+              active={activeIndex === 2}
+              onClick={goDashboard}
+            >
+              Dashboard
+            </TabButton>
+          </TabsTrack>
+        </TabsBar>
+
+        <Title>Cartões de Saída</Title>
+        <Subtitle>
+          Leia o cartão do funcionário e do responsável para liberar a saída da escola.
+        </Subtitle>
+
+        <StepsGrid>
+          {/* Etapa 1 — Funcionário */}
+          <StepCard>
+            <StepHeader>Etapa 1</StepHeader>
+            <StepTitle>Funcionário da Instituição</StepTitle>
+            <StepDescription>
+              O colaborador confirma a liberação da saída utilizando seu cartão.
+            </StepDescription>
+
+            <StepStatusRow>
+              <LedDot status={employeeStatus} />
+              <StepStatusText>{textByStatus[employeeStatus]}</StepStatusText>
+            </StepStatusRow>
+
+            <StepButtonsRow>
+              <StepButton onClick={okEmployee}>
+                Simular leitura OK
+              </StepButton>
+              <StepButton variant="secondary" onClick={errorEmployee}>
+                Simular erro
+              </StepButton>
+            </StepButtonsRow>
+          </StepCard>
+
+          {/* Etapa 2 — Pai / Responsável */}
+          <StepCard disabled={!canParent}>
+            <StepHeader>Etapa 2</StepHeader>
+            <StepTitle>Pai / Responsável</StepTitle>
+            <StepDescription>
+              O responsável confirma que está retirando o aluno da escola.
+            </StepDescription>
+
+            <StepStatusRow>
+              <LedDot status={canParent ? parentStatus : "idle"} />
+              <StepStatusText>
+                {canParent
+                  ? textByStatus[parentStatus]
+                  : "Aguarde o funcionário validar a saída."}
+              </StepStatusText>
+            </StepStatusRow>
+
+            <StepButtonsRow>
+              <StepButton disabled={!canParent} onClick={okParent}>
+                Simular leitura OK
+              </StepButton>
+              <StepButton
+                disabled={!canParent}
+                variant="secondary"
+                onClick={errorParent}
+              >
+                Simular erro
+              </StepButton>
+            </StepButtonsRow>
+          </StepCard>
+        </StepsGrid>
+
+        <GlobalStatusArea status={allOk ? "success" : "waiting"}>
+          <GlobalStatusBadge status={allOk ? "success" : "waiting"}>
+            {allOk ? "Saída liberada" : "Fluxo em andamento"}
+          </GlobalStatusBadge>
+
+          <GlobalStatusText>
+            {allOk
+              ? "Funcionário e responsável confirmados. Saída autorizada."
+              : "Conclua as duas etapas para liberar a saída do aluno."}
+          </GlobalStatusText>
+        </GlobalStatusArea>
+      </Card>
+    </PageWrapper>
+  );
+}
