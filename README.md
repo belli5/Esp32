@@ -41,6 +41,9 @@ data/
 platformio.ini
 README.md
 
+<img width="804" height="182" alt="image" src="https://github.com/user-attachments/assets/4d60914b-cc47-4176-a678-4b7ac2629c8f" />
+
+
 ### Dependências (PlatformIO)
 
 platformio.ini (exemplo):
