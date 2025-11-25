@@ -1,7 +1,17 @@
 # Controle de Entrada e Saída com ESP32 + RFID
-### Descrição
+
+## Descrição
 
 Sistema para controle de entrada e saída de crianças em creches/escolas com dupla confirmação: leitura do cartão do funcionário e, em seguida, do responsável. O evento só é registrado quando ambos os identificadores são validados dentro de uma janela de tempo. Os registros são armazenados no sistema de arquivos da ESP32.
+
+## O Problema
+
+Atualmente, o controle de acesso na portaria é predominantemente manual, baseado em conferências visuais, listagens impressas e anotações pontuais. Esse contexto está sujeito a erros de identificação, atrasos em horários de pico e inconsistências de registro, comprometendo a confiabilidade das informações e a eficácia operacional. Além disso, a ausência de confirmação para os pais e responsáveis reduz a transparência do processo e gera insegurança, uma vez que não há comunicação sobre a movimentação dos alunos. 
+
+## Proposta do Projeto
+
+Desenvolver um sistema de registro de entrada e saída baseado em identificação digital - pulseira, cartão NFC/RFID - integrado a leitores na portaria, substituindo o controle manual por um processo automatizado. 
+
 
 ### Especificações do Projeto
 
@@ -30,19 +40,8 @@ RC522 3.3V → ESP32 3V3
 RC522 GND → ESP32 GND
 
 ### Estrutura Sugerida
-src/
-  main.cpp          (lógica principal, estados, janela de confirmação)
-  rfid.*            (inicialização/leitura MFRC522)
-  storage.*         (SPIFFS: ler/gravar UIDs e logs)
-  ui.*              (feedback por Serial/LED/Buzzer, comandos)
-data/
-  cards.txt
-  admins.txt
-platformio.ini
-README.md
 
 <img width="804" height="182" alt="image" src="https://github.com/user-attachments/assets/4d60914b-cc47-4176-a678-4b7ac2629c8f" />
-
 
 ### Dependências (PlatformIO)
 
