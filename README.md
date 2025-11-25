@@ -15,29 +15,29 @@ Desenvolver um sistema de registro de entrada e saída baseado em identificaçã
 
 ### Especificações do Projeto
 
-Placa: ESP32 (framework Arduino, via PlatformIO)
+- Placa: ESP32 (framework Arduino, via PlatformIO)
 
-Módulo RFID: RC522 (RoboCore)
+- Módulo RFID: RC522 (RoboCore)
 
-Linguagem: C/C++
+- Linguagem: C/C++
 
-Baudrate Serial: 9600
+- Baudrate Serial: 9600
 
 ### Ligações (SPI – exemplo, ajuste conforme sua placa)
 
-RC522 SDA(SS) → ESP32 GPIO 5
+- RC522 SDA(SS) → ESP32 GPIO 5
 
-RC522 SCK → ESP32 GPIO 18
+- RC522 SCK → ESP32 GPIO 18
 
-RC522 MOSI → ESP32 GPIO 23
+- RC522 MOSI → ESP32 GPIO 23
 
-RC522 MISO → ESP32 GPIO 19
+- RC522 MISO → ESP32 GPIO 19
 
-RC522 RST → ESP32 GPIO 21
+- RC522 RST → ESP32 GPIO 21
 
-RC522 3.3V → ESP32 3V3
+- RC522 3.3V → ESP32 3V3
 
-RC522 GND → ESP32 GND
+- RC522 GND → ESP32 GND
 
 ### Estrutura Sugerida
 
