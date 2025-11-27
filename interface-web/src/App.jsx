@@ -7,6 +7,7 @@ import FirstPage  from './pages/firstPage/firstPage'
 import Cadastrar from './pages/Cadastro/cadastro'
 import Entrada from './pages/Entrada/entrada'
 import Saida from './pages/Saida/saida'
+import Dashboard from './pages/Dashboard/dashboard'
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
         <Route path="/cadastro" element={<Cadastrar />} />
         <Route path="/entrada" element={<Entrada />} />
         <Route path="/saida" element={<Saida />} />
+        <Route path="/dashboard" element={<Dashboard />} />
       </Routes>
     </>
   )
