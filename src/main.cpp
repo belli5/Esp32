@@ -17,6 +17,7 @@
 
 // MQTT
 #include <PubSubClient.h>
+#include <ArduinoJson.h>
 
 // Variáveis das LEDs e Arquivos
 #define LED_RED     27  
@@ -240,16 +241,36 @@ bool deleteCard(const String &uidToRemoveRaw) {
 }
 
 // Função que registra um UID em um arquivo
-void registerCard(const char* fileName) {
+void registerCard(const char* fileName, const char* tipoCadastro) {
   Serial.print("\n[CADASTRO] Aproxime um cartao para cadastrar no arquivo ");
   Serial.println(fileName);
   unsigned long t0 = millis();
 
+  // avisa o front que o cadastro começou
+  if (mqttClient.connected()) {
+    String payload = "{";
+    payload += "\"event\":\"cadastro_start\",";
+    payload += "\"tipo\":\"";     payload += tipoCadastro; payload += "\"";
+    payload += "}";
+    mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+  }
+
   while (true) {
+    // timeout de 10s
     if (millis() - t0 > 10000) {
       Serial.println("[CADASTRO] Tempo esgotado (10s). Cancelado.");
       digitalWrite(LED_RED, HIGH); delay(200);
       digitalWrite(LED_RED, LOW);
+
+      // avisa timeout pro front
+      if (mqttClient.connected()) {
+        String payload = "{";
+        payload += "\"event\":\"cadastro_timeout\",";
+        payload += "\"tipo\":\"";     payload += tipoCadastro; payload += "\"";
+        payload += "}";
+        mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+      }
+
       return;
     }
 
@@ -264,6 +285,16 @@ void registerCard(const char* fileName) {
       Serial.println("[CADASTRO] UID já cadastrado nesse arquivo.");
       digitalWrite(LED_RED, HIGH); delay(300);
       digitalWrite(LED_RED, LOW);
+
+      // avisa que já estava cadastrado
+      if (mqttClient.connected()) {
+        String payload = "{";
+        payload += "\"event\":\"cadastro_already_registered\",";
+        payload += "\"tipo\":\"";     payload += tipoCadastro; payload += "\",";
+        payload += "\"uid\":\"";      payload += uidString;    payload += "\"";
+        payload += "}";
+        mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+      }
     } else {
       bool ok = appendLine(fileName, uidString);
       if (ok) {
@@ -273,10 +304,30 @@ void registerCard(const char* fileName) {
         digitalWrite(LED_YELLOW, LOW);
         digitalWrite(LED_GREEN, HIGH); delay(300);
         digitalWrite(LED_GREEN, LOW);
+
+        // sucesso – manda pro front
+        if (mqttClient.connected()) {
+          String payload = "{";
+          payload += "\"event\":\"cadastro_success\",";
+          payload += "\"tipo\":\"";     payload += tipoCadastro; payload += "\",";
+          payload += "\"uid\":\"";      payload += uidString;    payload += "\"";
+          payload += "}";
+          mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+        }
       } else {
         Serial.println("[CADASTRO] ERRO ao salvar no arquivo.");
         digitalWrite(LED_RED, HIGH); delay(400);
         digitalWrite(LED_RED, LOW);
+
+        // erro ao salvar – manda pro front
+        if (mqttClient.connected()) {
+          String payload = "{";
+          payload += "\"event\":\"cadastro_error\",";
+          payload += "\"tipo\":\"";       payload += tipoCadastro; payload += "\",";
+          payload += "\"reason\":\"fs_write_failed\"";
+          payload += "}";
+          mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+        }
       }
     }
 
@@ -285,6 +336,7 @@ void registerCard(const char* fileName) {
     break;
   }
 }
+
 
 // Inicialização do Wi-Fi + NTP
 void initWiFi() {
@@ -586,20 +638,6 @@ size_t listarUsuariosDentroHoje() {
   return totalDentro;
 }
 
-// --------- MQTT: callback e reconexão ---------
-
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  String msg;
-  for (unsigned int i = 0; i < length; i++) {
-    msg += (char)payload[i];
-  }
-
-  Serial.print("MQTT mensagem recebida em [");
-  Serial.print(topic);
-  Serial.print("]: ");
-  Serial.println(msg);
-}
-
 void reconnectMQTT() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("MQTT: sem WiFi, nao conecta no broker.");
@@ -623,6 +661,51 @@ void reconnectMQTT() {
       Serial.println(" tentando novamente em 2s...");
       delay(2000);
     }
+  }
+}
+
+
+// --------- MQTT: callback e reconexão ---------
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg;
+  for (unsigned int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+
+  Serial.print("MQTT mensagem recebida em [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  Serial.println(msg);
+
+  if (String(topic) != MQTT_TOPIC_CMD) return;
+
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, msg);
+  if (err) {
+    Serial.println("JSON invalido no comando MQTT");
+    return;
+  }
+
+  const char* cmd  = doc["cmd"];   // ex: "start_register"
+  const char* tipo = doc["tipo"];  // "parent" ou "employee"
+
+  if (!cmd) return;
+
+  // Exemplo de comando: { "cmd": "start_register", "tipo": "parent" }
+  if (strcmp(cmd, "start_register") == 0 && tipo) {
+
+  if (mqttClient.connected()) {
+    String payloadStatus = String("{\"context\":\"cadastro\",\"tipo\":\"") +
+                           tipo + "\",\"status\":\"waiting\"}";
+    mqttClient.publish(MQTT_TOPIC_STATUS, payloadStatus.c_str());
+  }
+
+  if (strcmp(tipo, "parent") == 0) {
+    registerCard(CARDS_FILE, "parent");
+  } else if (strcmp(tipo, "employee") == 0) {
+    registerCard(ADMINS_FILE, "employee");
+  }
   }
 }
 
@@ -855,25 +938,27 @@ void loop() {
   mqttClient.loop();
 
   if (Serial.available()) {
-    char c = Serial.read();
-    if (c == 'c' || c == 'C') registerCard(CARDS_FILE);
-    if (c == 'a' || c == 'A') registerCard(ADMINS_FILE);
-    if (c == 'l')             listRegistered(CARDS_FILE);
-    if (c == 'L')             listRegistered(ADMINS_FILE);
-    if (c == 'u' || c == 'U') countRegisteredAndShow(CARDS_FILE);
-    if (c == 'f' || c == 'F') countRegisteredAndShow(ADMINS_FILE);
-    if (c == 't' || c == 'T') listarAtrasosDepoisDe815();
-    if (c == 'p' || c == 'P') listarUsuariosDentroHoje();
-    if (c == 'm' || c == 'M') listMovimentacoes();
-    if (c == 'd' || c == 'D') {
-      Serial.println("Digite o UID a deletar:");
-      while (!Serial.available()) delay(10);
-      String uid = Serial.readStringUntil('\n');
-      uid.trim();
-      uid.toLowerCase();
-      deleteCard(uid);
-    }
+  char c = Serial.read();
+
+  if (c == 'c' || c == 'C') registerCard(CARDS_FILE, "parent");
+  if (c == 'a' || c == 'A') registerCard(ADMINS_FILE, "employee");
+
+  if (c == 'l')             listRegistered(CARDS_FILE);
+  if (c == 'L')             listRegistered(ADMINS_FILE);
+  if (c == 'u' || c == 'U') countRegisteredAndShow(CARDS_FILE);
+  if (c == 'f' || c == 'F') countRegisteredAndShow(ADMINS_FILE);
+  if (c == 't' || c == 'T') listarAtrasosDepoisDe815();
+  if (c == 'p' || c == 'P') listarUsuariosDentroHoje();
+  if (c == 'm' || c == 'M') listMovimentacoes();
+  if (c == 'd' || c == 'D') {
+    Serial.println("Digite o UID a deletar:");
+    while (!Serial.available()) delay(10);
+    String uid = Serial.readStringUntil('\n');
+    uid.trim();
+    uid.toLowerCase();
+    deleteCard(uid);
   }
+}
 
   if (!mfrc522.PICC_IsNewCardPresent()) return;
   if (!mfrc522.PICC_ReadCardSerial())   return;

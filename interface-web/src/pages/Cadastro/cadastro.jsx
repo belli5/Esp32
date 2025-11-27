@@ -1,5 +1,11 @@
 import React, { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
+import mqtt from "mqtt";
+
+const MQTT_URL = "ws://172.20.10.2:9001"; // porta de WebSocket do broker
+const TOPIC_CMD = "portaria/comandos";
+const TOPIC_STATUS = "portaria/status";
+
 
 import {
   PageWrapper,
@@ -26,20 +32,67 @@ export default function Cadastrar() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // 0 = Home, 1 = Cadastro
   const activeIndex = location.pathname === "/cadastro" ? 1 : 0;
 
-  // agora o mode é só 'parent' | 'employee' | null
-  const [mode, setMode] = useState(null);
-  const [status, setStatus] = useState("idle"); // 'idle' | 'waiting' | 'success' | 'error'
-
+  const [mode, setMode] = useState(null);             // 'parent' | 'employee'
+  const [status, setStatus] = useState("idle");       // 'idle' | 'waiting' | 'success' | 'error'
+  const [client, setClient] = useState(null);
   const goHome = () => navigate("/");
   const goCadastro = () => navigate("/cadastro");
   const goDashboard = () => navigate("/dashboard");
 
+    React.useEffect(() => {
+    // conecta no broker via WebSocket
+    const c = mqtt.connect(MQTT_URL, {
+      clientId: "front-web-" + Math.random().toString(16).slice(2),
+    });
+
+    setClient(c);
+
+    c.on("connect", () => {
+      console.log("MQTT conectado no front");
+      c.subscribe(TOPIC_STATUS);
+    });
+
+    c.on("message", (topic, payload) => {
+      if (topic !== TOPIC_STATUS) return;
+      try {
+        const msg = JSON.parse(payload.toString());
+        if (msg.context === "cadastro") {
+          // status vindo da ESP32
+          if (msg.status === "waiting") setStatus("waiting");
+          if (msg.status === "success") setStatus("success");
+          if (msg.status === "error") setStatus("error");
+        }
+      } catch (e) {
+        console.error("Erro ao parsear status MQTT:", e);
+      }
+    });
+
+    c.on("error", (err) => {
+      console.error("Erro MQTT front:", err);
+    });
+
+    return () => {
+      c.end(true);
+    };
+  }, []);
+
+
   function selectMode(nextMode) {
     setMode(nextMode);
     setStatus("waiting");
+
+    if (client && client.connected) {
+      const payload = JSON.stringify({
+        cmd: "start_register",
+        tipo: nextMode,           
+      });
+      client.publish(TOPIC_CMD, payload);
+      console.log("Comando de cadastro enviado:", payload);
+    } else {
+      console.warn("MQTT ainda não conectado no front");
+    }
   }
 
   const labelByMode = {
