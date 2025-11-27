@@ -11,42 +11,53 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 
-
 // Wi-Fi + data/hora
 #include <WiFi.h>
 #include <time.h>
 
+// MQTT
+#include <PubSubClient.h>
 
 // Variáveis das LEDs e Arquivos
 #define LED_RED     27  
 #define LED_GREEN    4  
 #define LED_YELLOW  22  
-const char* CARDS_FILE          = "/usuarios.txt";
-const char* ADMINS_FILE         = "/funcionarios.txt";
-const char* MOVIMENTACOES_FILE  = "/movimentacoes.txt";
 
+const char* CARDS_FILE         = "/usuarios.txt";
+const char* ADMINS_FILE        = "/funcionarios.txt";
+const char* MOVIMENTACOES_FILE = "/movimentacoes.txt";
 
-// Configuralção de WiFi e de Fuso
+// Configuração de WiFi e de Fuso
 #define WIFI_SSID "iPhone de Gabriel"
 #define WIFI_PASS "12345678"
+
 const char* NTP_SERVER      = "pool.ntp.org";
 const long  GMT_OFFSET_SEC  = -3 * 3600;
 const int   DST_OFFSET_SEC  = 0;
-
 
 // Definições da RC522
 MFRC522DriverPinSimple ss_pin(5);
 MFRC522DriverSPI driver{ss_pin};
 MFRC522 mfrc522{driver};
 
-
 // Fila e semáforo + contador
 QueueHandle_t filaCartoes = NULL;      // fila de String
 SemaphoreHandle_t semAcessoLiberado = NULL;
 uint8_t cartoesPendentes = 0;
 
+// --------- MQTT CONFIG ---------
+const char* MQTT_BROKER       = "172.20.10.2";   // IP do PC com o broker
+const uint16_t MQTT_PORT      = 1884;
+const char* MQTT_CLIENT_ID    = "esp32-portaria-01";
+const char* MQTT_TOPIC_MOV    = "portaria/movimentacoes";  // eventos de entrada/saida
+const char* MQTT_TOPIC_CMD    = "portaria/comandos";       // comandos vindos do React
+const char* MQTT_TOPIC_STATUS = "portaria/status";         // msgs de status/resposta
+
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
 
 // --------- Funções auxiliares ----------
+
 String uidToString(const MFRC522::Uid& uid) {
   String s = "";
   for (byte i = 0; i < uid.size; i++) {
@@ -85,6 +96,52 @@ void listRegistered(const char* fileName) {
   Serial.println("== fim ==");
 }
 
+// --------- conta e mostra UIDs cadastrados ----------
+// Saída na Serial:
+// <quantidade>
+// <uid1>
+// <uid2>
+// ...
+size_t countRegisteredAndShow(const char* fileName) {
+  File f = SPIFFS.open(fileName, FILE_READ);
+  if (!f) {
+    Serial.println("0");
+    return 0;
+  }
+
+  size_t count = 0;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length()) {
+      count++;
+    }
+  }
+  f.close();
+
+  Serial.println(count);
+
+  if (count == 0) {
+    return 0;
+  }
+
+  File f2 = SPIFFS.open(fileName, FILE_READ);
+  if (!f2) {
+    return count;
+  }
+
+  while (f2.available()) {
+    String line = f2.readStringUntil('\n');
+    line.trim();
+    if (line.length()) {
+      Serial.println(line);
+    }
+  }
+  f2.close();
+
+  return count;
+}
+
 // Função que lista o arquivo de movimentações
 void listMovimentacoes() {
   File f = SPIFFS.open(MOVIMENTACOES_FILE, FILE_READ);
@@ -107,8 +164,7 @@ void listMovimentacoes() {
   Serial.println("== fim das movimentacoes ==");
 }
 
-
-// Fução que verifica se um certo UID está cadastrado
+// Função que verifica se um certo UID está cadastrado
 bool isRegistered(const char* fileName, const String &uid) {
   File f = SPIFFS.open(fileName, FILE_READ);
   if (!f) return false;
@@ -124,7 +180,6 @@ bool isRegistered(const char* fileName, const String &uid) {
   f.close();
   return false;
 }
-
 
 // Função que remove um UID de um arquivo
 static bool tryRemoveUidFrom(const char* path, const String& uidNorm) {
@@ -166,7 +221,6 @@ static bool tryRemoveUidFrom(const char* path, const String& uidNorm) {
   return true;
 }
 
-
 // Função que procura em ambos os arquivos para deletar o UID
 bool deleteCard(const String &uidToRemoveRaw) {
   String uid = uidToRemoveRaw;
@@ -184,7 +238,6 @@ bool deleteCard(const String &uidToRemoveRaw) {
   Serial.println("UID nao encontrado em CARDS_FILE nem em ADMINS_FILE.");
   return false;
 }
-
 
 // Função que registra um UID em um arquivo
 void registerCard(const char* fileName) {
@@ -233,7 +286,6 @@ void registerCard(const char* fileName) {
   }
 }
 
-
 // Inicialização do Wi-Fi + NTP
 void initWiFi() {
   Serial.print("Conectando ao WiFi: ");
@@ -253,7 +305,7 @@ void initWiFi() {
     Serial.print("WiFi conectado. IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("Falha ao conectar no WiFi. Hora NTP pode nao funcionar.");
+    Serial.println("Falha ao conectar no WiFi. Hora NTP/MQTT podem nao funcionar.");
   }
 }
 
@@ -303,6 +355,279 @@ bool obterDataHoraAtual(String &dataStr, String &horaStr) {
   return true;
 }
 
+// --------- NOVA FUNÇÃO: atrasados após 08:15 ----------
+//
+// Lê o MOVIMENTACOES_FILE, considera apenas o dia atual,
+// pega apenas o primeiro horário de cada UID de usuário,
+// e conta/mostra quem teve primeira passagem após 08:15:00.
+//
+// Saída na Serial:
+// <quantidade_atrasados>
+// <uid1>
+// <uid2>
+// ...
+size_t listarAtrasosDepoisDe815() {
+  const String HORA_LIMITE = "08:15:00";
+
+  String dataHoje, horaAgora;
+  if (!obterDataHoraAtual(dataHoje, horaAgora)) {
+    Serial.println("0");
+    return 0;
+  }
+
+  File f = SPIFFS.open(MOVIMENTACOES_FILE, FILE_READ);
+  if (!f) {
+    Serial.println("0");
+    return 0;
+  }
+
+  const int MAX_UIDS_DIA = 128;
+  String uidsDia[MAX_UIDS_DIA];
+  String horasPrimeira[MAX_UIDS_DIA];
+  int numUidsDia = 0;
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+
+    // Extrair data da linha: "... do dia -DD/MM/AAAA-"
+    const String padData = " do dia -";
+    int idxData = line.indexOf(padData);
+    if (idxData < 0) continue;
+    int dataStart = idxData + padData.length();
+    int dataEnd = line.indexOf("-", dataStart);
+    if (dataEnd < 0) continue;
+    String dataLinha = line.substring(dataStart, dataEnd);
+    dataLinha.trim();
+
+    // Só consideramos o dia atual
+    if (dataLinha != dataHoje) continue;
+
+    // Extrair UID do usuário: "-FUNC- liberou -USUARIO- às -HH:MM:SS- ..."
+    const String padLiberou = " liberou -";
+    int idxLib = line.indexOf(padLiberou);
+    if (idxLib < 0) continue;
+    int uidUsuarioStart = idxLib + padLiberou.length();
+    int uidUsuarioEnd = line.indexOf("-", uidUsuarioStart);
+    if (uidUsuarioEnd < 0) continue;
+    String uidUsuario = line.substring(uidUsuarioStart, uidUsuarioEnd);
+    uidUsuario.trim();
+    uidUsuario.toLowerCase();
+
+    // Extrair hora: " às -HH:MM:SS-"
+    const String padHora = " às -";
+    int idxHora = line.indexOf(padHora);
+    if (idxHora < 0) continue;
+    int horaStart = idxHora + padHora.length();
+    int horaEnd = line.indexOf("-", horaStart);
+    if (horaEnd < 0) continue;
+    String horaLinha = line.substring(horaStart, horaEnd);
+    horaLinha.trim();
+
+    // Garante que é um usuário (e não funcionário)
+    if (!isRegistered(CARDS_FILE, uidUsuario)) {
+      continue;
+    }
+
+    // Se ainda não temos esse UID registrado para o dia, salva a primeira hora
+    int idx = -1;
+    for (int i = 0; i < numUidsDia; i++) {
+      if (uidsDia[i] == uidUsuario) {
+        idx = i;
+        break;
+      }
+    }
+
+    if (idx == -1) {
+      if (numUidsDia < MAX_UIDS_DIA) {
+        uidsDia[numUidsDia] = uidUsuario;
+        horasPrimeira[numUidsDia] = horaLinha;
+        numUidsDia++;
+      }
+    }
+    // se já existia, ignoramos (só o primeiro registro conta)
+  }
+
+  f.close();
+
+  // Agora verifica quem tem hora > 08:15:00
+  size_t totalAtrasados = 0;
+  for (int i = 0; i < numUidsDia; i++) {
+    if (horasPrimeira[i] > HORA_LIMITE) {
+      totalAtrasados++;
+    }
+  }
+
+  Serial.println(totalAtrasados);
+  if (totalAtrasados == 0) {
+    return 0;
+  }
+
+  for (int i = 0; i < numUidsDia; i++) {
+    if (horasPrimeira[i] > HORA_LIMITE) {
+      Serial.println(uidsDia[i]);
+    }
+  }
+
+  return totalAtrasados;
+}
+
+// --------- NOVA FUNÇÃO: usuários que entraram e não saíram ----------
+//
+// Lê o MOVIMENTACOES_FILE, considera apenas o dia atual,
+// conta quantas vezes cada UID de usuário aparece no log.
+// Se a contagem for ímpar, significa que ele está "dentro".
+//
+// Saída na Serial:
+// <quantidade_dentro>
+// <uid1>
+// <uid2>
+// ...
+size_t listarUsuariosDentroHoje() {
+  String dataHoje, horaAgora;
+  if (!obterDataHoraAtual(dataHoje, horaAgora)) {
+    Serial.println("0");
+    return 0;
+  }
+
+  File f = SPIFFS.open(MOVIMENTACOES_FILE, FILE_READ);
+  if (!f) {
+    Serial.println("0");
+    return 0;
+  }
+
+  const int MAX_UIDS_DIA = 128;
+  String uidsDia[MAX_UIDS_DIA];
+  int contagens[MAX_UIDS_DIA];
+  int numUidsDia = 0;
+
+  // Inicializa contagens
+  for (int i = 0; i < MAX_UIDS_DIA; i++) {
+    contagens[i] = 0;
+  }
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+
+    // Extrair data da linha: "... do dia -DD/MM/AAAA-"
+    const String padData = " do dia -";
+    int idxData = line.indexOf(padData);
+    if (idxData < 0) continue;
+    int dataStart = idxData + padData.length();
+    int dataEnd = line.indexOf("-", dataStart);
+    if (dataEnd < 0) continue;
+    String dataLinha = line.substring(dataStart, dataEnd);
+    dataLinha.trim();
+
+    // Só consideramos o dia atual
+    if (dataLinha != dataHoje) continue;
+
+    // Extrair UID do usuário: "-FUNC- liberou -USUARIO- às -HH:MM:SS- ..."
+    const String padLiberou = " liberou -";
+    int idxLib = line.indexOf(padLiberou);
+    if (idxLib < 0) continue;
+    int uidUsuarioStart = idxLib + padLiberou.length();
+    int uidUsuarioEnd = line.indexOf("-", uidUsuarioStart);
+    if (uidUsuarioEnd < 0) continue;
+    String uidUsuario = line.substring(uidUsuarioStart, uidUsuarioEnd);
+    uidUsuario.trim();
+    uidUsuario.toLowerCase();
+
+    // Garante que é um usuário (e não funcionário)
+    if (!isRegistered(CARDS_FILE, uidUsuario)) {
+      continue;
+    }
+
+    // Procura o UID no array
+    int idx = -1;
+    for (int i = 0; i < numUidsDia; i++) {
+      if (uidsDia[i] == uidUsuario) {
+        idx = i;
+        break;
+      }
+    }
+
+    // Se ainda não existe, adiciona
+    if (idx == -1) {
+      if (numUidsDia < MAX_UIDS_DIA) {
+        uidsDia[numUidsDia] = uidUsuario;
+        contagens[numUidsDia] = 1; // primeira vez
+        numUidsDia++;
+      }
+    } else {
+      contagens[idx]++; // mais uma ocorrência
+    }
+  }
+
+  f.close();
+
+  // Agora verifica quem tem contagem ímpar
+  size_t totalDentro = 0;
+  for (int i = 0; i < numUidsDia; i++) {
+    if (contagens[i] % 2 == 1) {
+      totalDentro++;
+    }
+  }
+
+  Serial.println(totalDentro);
+  if (totalDentro == 0) {
+    return 0;
+  }
+
+  for (int i = 0; i < numUidsDia; i++) {
+    if (contagens[i] % 2 == 1) {
+      Serial.println(uidsDia[i]);
+    }
+  }
+
+  return totalDentro;
+}
+
+// --------- MQTT: callback e reconexão ---------
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg;
+  for (unsigned int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+
+  Serial.print("MQTT mensagem recebida em [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  Serial.println(msg);
+}
+
+void reconnectMQTT() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("MQTT: sem WiFi, nao conecta no broker.");
+    return;
+  }
+
+  while (!mqttClient.connected()) {
+    Serial.print("Conectando ao broker MQTT em ");
+    Serial.print(MQTT_BROKER);
+    Serial.print(":");
+    Serial.println(MQTT_PORT);
+
+    if (mqttClient.connect(MQTT_CLIENT_ID)) {
+      Serial.println("MQTT conectado!");
+      mqttClient.subscribe(MQTT_TOPIC_CMD);
+      Serial.print("Inscrito em ");
+      Serial.println(MQTT_TOPIC_CMD);
+    } else {
+      Serial.print("Falha na conexao MQTT, rc=");
+      Serial.print(mqttClient.state());
+      Serial.println(" tentando novamente em 2s...");
+      delay(2000);
+    }
+  }
+}
+
+// --------- Movimentação: arquivo + MQTT ----------
+
 void registrarMovimentacao(const String &uidFuncionario, const String &uidUsuario) {
   String dataStr, horaStr;
   if (!obterDataHoraAtual(dataStr, horaStr)) {
@@ -314,9 +639,27 @@ void registrarMovimentacao(const String &uidFuncionario, const String &uidUsuari
                  "- às -" + horaStr + "- do dia -" + dataStr + "-";
 
   if (appendLine(MOVIMENTACOES_FILE, linha)) {
-    Serial.println("Movimentacao registrada: " + linha);
+    Serial.println("Movimentacao registrado: " + linha);
   } else {
     Serial.println("ERRO ao registrar movimentacao em MOVIMENTACOES_FILE.");
+  }
+
+  if (mqttClient.connected()) {
+    String payload = "{";
+    payload += "\"funcionario\":\"" + uidFuncionario + "\",";
+    payload += "\"usuario\":\""     + uidUsuario     + "\",";
+    payload += "\"data\":\""        + dataStr        + "\",";
+    payload += "\"hora\":\""        + horaStr        + "\"";
+    payload += "}";
+
+    bool ok = mqttClient.publish(MQTT_TOPIC_MOV, payload.c_str());
+    if (ok) {
+      Serial.println("MQTT: publicado em " + String(MQTT_TOPIC_MOV) + " -> " + payload);
+    } else {
+      Serial.println("MQTT: FALHA ao publicar movimentacao.");
+    }
+  } else {
+    Serial.println("MQTT: nao conectado, movimentacao nao enviada.");
   }
 }
 
@@ -343,20 +686,16 @@ void processarCartaoLido(const String &uidLido) {
     return;
   }
 
-  // 1) Enfileira o UID lido
   enviarUidParaFila(uidLido);
   cartoesPendentes++;
 
-  // Se ainda só temos 1 cartão, espera o próximo
   if (cartoesPendentes < 2) {
     Serial.println("Aguardando segundo cartao para validacao...");
     return;
   }
 
-  // Já temos 2 cartões enfileirados: zera o contador
   cartoesPendentes = 0;
 
-  // 2) Pega os dois UIDs da fila
   String uid1, uid2;
 
   Serial.println("Obtendo primeiro cartao da fila...");
@@ -377,14 +716,12 @@ void processarCartaoLido(const String &uidLido) {
   Serial.print("UID1 recebido: "); Serial.println(uid1);
   Serial.print("UID2 recebido: "); Serial.println(uid2);
 
-  // 3) Verifica se cada UID é usuario/funcionario
   bool uid1EhUsuario      = isRegistered(CARDS_FILE,  uid1);
   bool uid1EhFuncionario  = isRegistered(ADMINS_FILE, uid1);
 
   bool uid2EhUsuario      = isRegistered(CARDS_FILE,  uid2);
   bool uid2EhFuncionario  = isRegistered(ADMINS_FILE, uid2);
 
-  // 3.1) Algum não cadastrado?
   if ((!uid1EhUsuario && !uid1EhFuncionario) ||
       (!uid2EhUsuario && !uid2EhFuncionario)) {
     Serial.println("Falha: um ou ambos os UIDs nao estao cadastrados.");
@@ -395,7 +732,6 @@ void processarCartaoLido(const String &uidLido) {
     return;
   }
 
-  // 3.2) Algum está ao mesmo tempo em usuarios e funcionarios? (config errada)
   if ((uid1EhUsuario && uid1EhFuncionario) ||
       (uid2EhUsuario && uid2EhFuncionario)) {
     Serial.println("Falha: UID encontrado em usuarios E funcionarios (configuracao invalida).");
@@ -406,7 +742,6 @@ void processarCartaoLido(const String &uidLido) {
     return;
   }
 
-  // 3.3) Só é válido se for 1 usuario + 1 funcionario
   bool casoValido =
       ( (uid1EhUsuario && uid2EhFuncionario) ||
         (uid1EhFuncionario && uid2EhUsuario) );
@@ -420,28 +755,24 @@ void processarCartaoLido(const String &uidLido) {
     return;
   }
 
-  // 4) Define quem é funcionário e quem é usuário
   String uidFuncionario, uidUsuario;
   if (uid1EhFuncionario && uid2EhUsuario) {
     uidFuncionario = uid1;
     uidUsuario     = uid2;
-  } else { // uid1EhUsuario && uid2EhFuncionario
+  } else {
     uidFuncionario = uid2;
     uidUsuario     = uid1;
   }
 
   Serial.println("✅ Combinacao valida: 1 funcionario + 1 usuario.");
 
-  // 5) Registra no arquivo de movimentacoes com data/hora
   registrarMovimentacao(uidFuncionario, uidUsuario);
 
-  // 6) Acende LED verde para indicar acesso liberado
   digitalWrite(LED_GREEN, HIGH);
   digitalWrite(LED_RED, LOW);
   delay(2000);
   digitalWrite(LED_GREEN, LOW);
 
-  // 7) Usa o semáforo (apenas demonstrativo)
   xSemaphoreGive(semAcessoLiberado);
   if (xSemaphoreTake(semAcessoLiberado, 0) == pdTRUE) {
     Serial.println("Semaforo semAcessoLiberado sinalizado e consumido.");
@@ -482,20 +813,27 @@ void setup() {
     Serial.println("SPIFFS OK. Arquivo de cadastros: /usuarios.txt");
   }
 
-  // Wi-Fi + NTP
   initWiFi();
   initTime();
+
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+  reconnectMQTT();
 
   mfrc522.PCD_Init();
   MFRC522Debug::PCD_DumpVersionToSerial(mfrc522, Serial);
   Serial.println(F("Scan PICC to see UID"));
   Serial.println(F(
-    "Comandos: "
-    "'c' = cadastrar novo usuario | "
-    "'a' = cadastrar novo admin | "
-    "'l' = listar usuarios | "
-    "'L' = listar admins | "
-    "'d' = deletar UID | "
+    "Comandos (via Serial por enquanto): \n"
+    "'c' = cadastrar novo usuario \n"
+    "'a' = cadastrar novo admin \n"
+    "'l' = listar usuarios (apenas UIDs) \n"
+    "'L' = listar admins (apenas UIDs) \n"
+    "'u' = quantidade + UIDs de usuarios \n"
+    "'f' = quantidade + UIDs de admins \n"
+    "'t' = usuarios atrasados (primeira passagem apos 08:15 hoje) \n"
+    "'p' = usuarios que estao dentro (registros impares hoje) \n"
+    "'d' = deletar UID \n"
     "'m' = listar movimentacoes"
   ));
 
@@ -511,13 +849,21 @@ void setup() {
 }
 
 void loop() {
-  // Comandos via Serial
+  if (!mqttClient.connected()) {
+    reconnectMQTT();
+  }
+  mqttClient.loop();
+
   if (Serial.available()) {
     char c = Serial.read();
     if (c == 'c' || c == 'C') registerCard(CARDS_FILE);
     if (c == 'a' || c == 'A') registerCard(ADMINS_FILE);
     if (c == 'l')             listRegistered(CARDS_FILE);
     if (c == 'L')             listRegistered(ADMINS_FILE);
+    if (c == 'u' || c == 'U') countRegisteredAndShow(CARDS_FILE);
+    if (c == 'f' || c == 'F') countRegisteredAndShow(ADMINS_FILE);
+    if (c == 't' || c == 'T') listarAtrasosDepoisDe815();
+    if (c == 'p' || c == 'P') listarUsuariosDentroHoje();
     if (c == 'm' || c == 'M') listMovimentacoes();
     if (c == 'd' || c == 'D') {
       Serial.println("Digite o UID a deletar:");
@@ -529,7 +875,6 @@ void loop() {
     }
   }
 
-  // Leitura de cartão normal
   if (!mfrc522.PICC_IsNewCardPresent()) return;
   if (!mfrc522.PICC_ReadCardSerial())   return;
 
