@@ -41,14 +41,32 @@ MFRC522DriverPinSimple ss_pin(5);
 MFRC522DriverSPI driver{ss_pin};
 MFRC522 mfrc522{driver};
 
-// Fila e semáforo + contador
-QueueHandle_t filaCartoes = NULL;      // fila de String
+// Fila e semáforo (fila não usada no fluxo atual, mas deixada aqui)
+QueueHandle_t filaCartoes = NULL;
 SemaphoreHandle_t semAcessoLiberado = NULL;
-uint8_t cartoesPendentes = 0;
+
+// --------- ESTADO DE MODO / ENTRADA / SAÍDA ---------
+enum TipoOperacao {
+  MODO_ENTRADA,
+  MODO_SAIDA
+};
+
+TipoOperacao modoAtual = MODO_ENTRADA;
+
+// ENTRADA: primeiro cartão = usuário, depois funcionário
+bool   aguardandoSegundoEntrada   = false;
+String uidUsuarioEntradaPendente;
+
+// SAÍDA: primeiro cartão = funcionário, depois usuário
+bool   aguardandoSegundoSaida     = false;
+String uidFuncionarioSaidaPendente;
+
+// Só processa leitura de cartão quando TRUE
+bool leituraHabilitada = false;
 
 // --------- MQTT CONFIG ---------
-const char* MQTT_BROKER       = "172.20.10.2";   // IP do PC com o broker
-const uint16_t MQTT_PORT      = 1883;
+const char* MQTT_BROKER       = "172.20.10.10";   // IP do PC com o broker
+const uint16_t MQTT_PORT      = 1884;
 const char* MQTT_CLIENT_ID    = "esp32-portaria-01";
 const char* MQTT_TOPIC_MOV    = "portaria/movimentacoes";  // eventos de entrada/saida
 const char* MQTT_TOPIC_CMD    = "portaria/comandos";       // comandos vindos do React
@@ -97,12 +115,7 @@ void listRegistered(const char* fileName) {
   Serial.println("== fim ==");
 }
 
-// --------- conta e mostra UIDs cadastrados ----------
-// Saída na Serial:
-// <quantidade>
-// <uid1>
-// <uid2>
-// ...
+// conta e lista os UIDs cadastrados
 size_t countRegisteredAndShow(const char* fileName) {
   File f = SPIFFS.open(fileName, FILE_READ);
   if (!f) {
@@ -143,9 +156,7 @@ size_t countRegisteredAndShow(const char* fileName) {
   return count;
 }
 
-// Lê uma linha no formato
-// -FUNC- liberou -USUARIO- às -HH:MM:SS- do dia -DD/MM/AAAA-
-// e extrai os campos. Retorna true se conseguiu.
+// Lê linha "-FUNC- recebeu/liberou -USER- às -HH:MM:SS- do dia -DD/MM/AAAA-"
 bool parseMovLine(const String &line,
                   String &uidFunc, String &uidUser,
                   String &hora, String &data)
@@ -154,7 +165,6 @@ bool parseMovLine(const String &line,
   s.trim();
   if (!s.length()) return false;
 
-  // 1) UID do funcionário (primeiro -...-)
   int firstDash  = s.indexOf('-');
   if (firstDash != 0) return false;
   int secondDash = s.indexOf('-', firstDash + 1);
@@ -162,17 +172,24 @@ bool parseMovLine(const String &line,
   uidFunc = s.substring(firstDash + 1, secondDash);
   uidFunc.trim();
 
-  // 2) UID do usuário: " liberou -<uid>-"
+  const String padRecebeu = " recebeu -";
   const String padLiberou = " liberou -";
-  int idxLib = s.indexOf(padLiberou, secondDash);
-  if (idxLib < 0) return false;
-  int uidUserStart = idxLib + padLiberou.length();
+
+  int idxTok  = s.indexOf(padRecebeu, secondDash);
+  int lenTok  = padRecebeu.length();
+
+  if (idxTok < 0) {
+    idxTok = s.indexOf(padLiberou, secondDash);
+    lenTok = padLiberou.length();
+  }
+  if (idxTok < 0) return false;
+
+  int uidUserStart = idxTok + lenTok;
   int uidUserEnd   = s.indexOf('-', uidUserStart);
   if (uidUserEnd < 0) return false;
   uidUser = s.substring(uidUserStart, uidUserEnd);
   uidUser.trim();
 
-  // 3) Hora: " às -HH:MM:SS-"
   const String padHora = " às -";
   int idxHora = s.indexOf(padHora, uidUserEnd);
   if (idxHora < 0) return false;
@@ -182,7 +199,6 @@ bool parseMovLine(const String &line,
   hora = s.substring(horaStart, horaEnd);
   hora.trim();
 
-  // 4) Data: " do dia -DD/MM/AAAA-"
   const String padData = " do dia -";
   int idxData = s.indexOf(padData, horaEnd);
   if (idxData < 0) return false;
@@ -195,8 +211,7 @@ bool parseMovLine(const String &line,
   return true;
 }
 
-// Lê TODO o arquivo de movimentações e envia cada linha como JSON
-// no mesmo tópico MQTT_TOPIC_MOV
+// Envia todo o histórico via MQTT
 void publishMovHistoryToMQTT() {
   if (!mqttClient.connected()) {
     Serial.println("MQTT: nao conectado, nao envia historico.");
@@ -223,7 +238,6 @@ void publishMovHistoryToMQTT() {
       continue;
     }
 
-    // Monta o mesmo JSON que você já manda em registrarMovimentacao
     String payload = "{";
     payload += "\"funcionario\":\"" + func + "\",";
     payload += "\"usuario\":\""     + user + "\",";
@@ -235,14 +249,14 @@ void publishMovHistoryToMQTT() {
     if (!ok) {
       Serial.println("MQTT: falha ao publicar linha de historico.");
     }
-    delay(10); // só pra não lotar o broker de uma vez
+    delay(10);
   }
 
   f.close();
   Serial.println("Historico enviado.");
 }
 
-// Função que lista o arquivo de movimentações
+// Lista movimentações na Serial
 void listMovimentacoes() {
   File f = SPIFFS.open(MOVIMENTACOES_FILE, FILE_READ);
   if (!f) {
@@ -264,7 +278,7 @@ void listMovimentacoes() {
   Serial.println("== fim das movimentacoes ==");
 }
 
-// Função que verifica se um certo UID está cadastrado
+// Verifica se UID está em um arquivo (usuarios ou funcionarios)
 bool isRegistered(const char* fileName, const String &uid) {
   File f = SPIFFS.open(fileName, FILE_READ);
   if (!f) return false;
@@ -281,7 +295,7 @@ bool isRegistered(const char* fileName, const String &uid) {
   return false;
 }
 
-// Função que remove um UID de um arquivo
+// Remove UID de um arquivo
 static bool tryRemoveUidFrom(const char* path, const String& uidNorm) {
   File f = SPIFFS.open(path, FILE_READ);
   if (!f) {
@@ -321,7 +335,7 @@ static bool tryRemoveUidFrom(const char* path, const String& uidNorm) {
   return true;
 }
 
-// Função que procura em ambos os arquivos para deletar o UID
+// Deleta UID de usuarios ou funcionarios
 bool deleteCard(const String &uidToRemoveRaw) {
   String uid = uidToRemoveRaw;
   uid.trim();
@@ -339,13 +353,12 @@ bool deleteCard(const String &uidToRemoveRaw) {
   return false;
 }
 
-// Função que registra um UID em um arquivo
+// Cadastro de cartão
 void registerCard(const char* fileName, const char* tipoCadastro) {
   Serial.print("\n[CADASTRO] Aproxime um cartao para cadastrar no arquivo ");
   Serial.println(fileName);
   unsigned long t0 = millis();
 
-  // avisa o front que o cadastro começou
   if (mqttClient.connected()) {
     String payload = "{";
     payload += "\"event\":\"cadastro_start\",";
@@ -355,13 +368,11 @@ void registerCard(const char* fileName, const char* tipoCadastro) {
   }
 
   while (true) {
-    // timeout de 10s
     if (millis() - t0 > 10000) {
       Serial.println("[CADASTRO] Tempo esgotado (10s). Cancelado.");
       digitalWrite(LED_RED, HIGH); delay(200);
       digitalWrite(LED_RED, LOW);
 
-      // avisa timeout pro front
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"event\":\"cadastro_timeout\",";
@@ -385,7 +396,6 @@ void registerCard(const char* fileName, const char* tipoCadastro) {
       digitalWrite(LED_RED, HIGH); delay(300);
       digitalWrite(LED_RED, LOW);
 
-      // avisa que já estava cadastrado
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"event\":\"cadastro_already_registered\",";
@@ -404,7 +414,6 @@ void registerCard(const char* fileName, const char* tipoCadastro) {
         digitalWrite(LED_GREEN, HIGH); delay(300);
         digitalWrite(LED_GREEN, LOW);
 
-        // sucesso – manda pro front
         if (mqttClient.connected()) {
           String payload = "{";
           payload += "\"event\":\"cadastro_success\",";
@@ -418,7 +427,6 @@ void registerCard(const char* fileName, const char* tipoCadastro) {
         digitalWrite(LED_RED, HIGH); delay(400);
         digitalWrite(LED_RED, LOW);
 
-        // erro ao salvar – manda pro front
         if (mqttClient.connected()) {
           String payload = "{";
           payload += "\"event\":\"cadastro_error\",";
@@ -436,8 +444,7 @@ void registerCard(const char* fileName, const char* tipoCadastro) {
   }
 }
 
-
-// Inicialização do Wi-Fi + NTP
+// Wi-Fi + NTP
 void initWiFi() {
   Serial.print("Conectando ao WiFi: ");
   Serial.println(WIFI_SSID);
@@ -486,8 +493,7 @@ void initTime() {
   Serial.println(&timeinfo, "%d/%m/%Y %H:%M:%S");
 }
 
-// --------- Data/hora helpers ----------
-
+// Helpers de data/hora
 bool obterDataHoraAtual(String &dataStr, String &horaStr) {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
@@ -495,8 +501,8 @@ bool obterDataHoraAtual(String &dataStr, String &horaStr) {
     return false;
   }
 
-  char bufData[11];  // DD/MM/AAAA
-  char bufHora[9];   // HH:MM:SS
+  char bufData[11];
+  char bufHora[9];
 
   strftime(bufData, sizeof(bufData), "%d/%m/%Y", &timeinfo);
   strftime(bufHora, sizeof(bufHora), "%H:%M:%S", &timeinfo);
@@ -506,17 +512,7 @@ bool obterDataHoraAtual(String &dataStr, String &horaStr) {
   return true;
 }
 
-// --------- NOVA FUNÇÃO: atrasados após 08:15 ----------
-//
-// Lê o MOVIMENTACOES_FILE, considera apenas o dia atual,
-// pega apenas o primeiro horário de cada UID de usuário,
-// e conta/mostra quem teve primeira passagem após 08:15:00.
-//
-// Saída na Serial:
-// <quantidade_atrasados>
-// <uid1>
-// <uid2>
-// ...
+// Atrasados depois de 08:15 (primeira ENTRADA do dia)
 size_t listarAtrasosDepoisDe815() {
   const String HORA_LIMITE = "08:15:00";
 
@@ -542,46 +538,24 @@ size_t listarAtrasosDepoisDe815() {
     line.trim();
     if (!line.length()) continue;
 
-    // Extrair data da linha: "... do dia -DD/MM/AAAA-"
-    const String padData = " do dia -";
-    int idxData = line.indexOf(padData);
-    if (idxData < 0) continue;
-    int dataStart = idxData + padData.length();
-    int dataEnd = line.indexOf("-", dataStart);
-    if (dataEnd < 0) continue;
-    String dataLinha = line.substring(dataStart, dataEnd);
-    dataLinha.trim();
+    String func, user, horaLinha, dataLinha;
+    if (!parseMovLine(line, func, user, horaLinha, dataLinha)) {
+      continue;
+    }
 
-    // Só consideramos o dia atual
     if (dataLinha != dataHoje) continue;
 
-    // Extrair UID do usuário: "-FUNC- liberou -USUARIO- às -HH:MM:SS- ..."
-    const String padLiberou = " liberou -";
-    int idxLib = line.indexOf(padLiberou);
-    if (idxLib < 0) continue;
-    int uidUsuarioStart = idxLib + padLiberou.length();
-    int uidUsuarioEnd = line.indexOf("-", uidUsuarioStart);
-    if (uidUsuarioEnd < 0) continue;
-    String uidUsuario = line.substring(uidUsuarioStart, uidUsuarioEnd);
+    // Só entradas (recebeu)
+    if (line.indexOf(" recebeu -") < 0) continue;
+
+    String uidUsuario = user;
     uidUsuario.trim();
     uidUsuario.toLowerCase();
 
-    // Extrair hora: " às -HH:MM:SS-"
-    const String padHora = " às -";
-    int idxHora = line.indexOf(padHora);
-    if (idxHora < 0) continue;
-    int horaStart = idxHora + padHora.length();
-    int horaEnd = line.indexOf("-", horaStart);
-    if (horaEnd < 0) continue;
-    String horaLinha = line.substring(horaStart, horaEnd);
-    horaLinha.trim();
-
-    // Garante que é um usuário (e não funcionário)
     if (!isRegistered(CARDS_FILE, uidUsuario)) {
       continue;
     }
 
-    // Se ainda não temos esse UID registrado para o dia, salva a primeira hora
     int idx = -1;
     for (int i = 0; i < numUidsDia; i++) {
       if (uidsDia[i] == uidUsuario) {
@@ -592,17 +566,15 @@ size_t listarAtrasosDepoisDe815() {
 
     if (idx == -1) {
       if (numUidsDia < MAX_UIDS_DIA) {
-        uidsDia[numUidsDia] = uidUsuario;
+        uidsDia[numUidsDia]      = uidUsuario;
         horasPrimeira[numUidsDia] = horaLinha;
         numUidsDia++;
       }
     }
-    // se já existia, ignoramos (só o primeiro registro conta)
   }
 
   f.close();
 
-  // Agora verifica quem tem hora > 08:15:00
   size_t totalAtrasados = 0;
   for (int i = 0; i < numUidsDia; i++) {
     if (horasPrimeira[i] > HORA_LIMITE) {
@@ -624,17 +596,7 @@ size_t listarAtrasosDepoisDe815() {
   return totalAtrasados;
 }
 
-// --------- NOVA FUNÇÃO: usuários que entraram e não saíram ----------
-//
-// Lê o MOVIMENTACOES_FILE, considera apenas o dia atual,
-// conta quantas vezes cada UID de usuário aparece no log.
-// Se a contagem for ímpar, significa que ele está "dentro".
-//
-// Saída na Serial:
-// <quantidade_dentro>
-// <uid1>
-// <uid2>
-// ...
+// Usuários que entraram e não saíram (contagem ímpar no dia)
 size_t listarUsuariosDentroHoje() {
   String dataHoje, horaAgora;
   if (!obterDataHoraAtual(dataHoje, horaAgora)) {
@@ -653,7 +615,6 @@ size_t listarUsuariosDentroHoje() {
   int contagens[MAX_UIDS_DIA];
   int numUidsDia = 0;
 
-  // Inicializa contagens
   for (int i = 0; i < MAX_UIDS_DIA; i++) {
     contagens[i] = 0;
   }
@@ -663,36 +624,21 @@ size_t listarUsuariosDentroHoje() {
     line.trim();
     if (!line.length()) continue;
 
-    // Extrair data da linha: "... do dia -DD/MM/AAAA-"
-    const String padData = " do dia -";
-    int idxData = line.indexOf(padData);
-    if (idxData < 0) continue;
-    int dataStart = idxData + padData.length();
-    int dataEnd = line.indexOf("-", dataStart);
-    if (dataEnd < 0) continue;
-    String dataLinha = line.substring(dataStart, dataEnd);
-    dataLinha.trim();
+    String func, user, horaLinha, dataLinha;
+    if (!parseMovLine(line, func, user, horaLinha, dataLinha)) {
+      continue;
+    }
 
-    // Só consideramos o dia atual
     if (dataLinha != dataHoje) continue;
 
-    // Extrair UID do usuário: "-FUNC- liberou -USUARIO- às -HH:MM:SS- ..."
-    const String padLiberou = " liberou -";
-    int idxLib = line.indexOf(padLiberou);
-    if (idxLib < 0) continue;
-    int uidUsuarioStart = idxLib + padLiberou.length();
-    int uidUsuarioEnd = line.indexOf("-", uidUsuarioStart);
-    if (uidUsuarioEnd < 0) continue;
-    String uidUsuario = line.substring(uidUsuarioStart, uidUsuarioEnd);
+    String uidUsuario = user;
     uidUsuario.trim();
     uidUsuario.toLowerCase();
 
-    // Garante que é um usuário (e não funcionário)
     if (!isRegistered(CARDS_FILE, uidUsuario)) {
       continue;
     }
 
-    // Procura o UID no array
     int idx = -1;
     for (int i = 0; i < numUidsDia; i++) {
       if (uidsDia[i] == uidUsuario) {
@@ -701,21 +647,19 @@ size_t listarUsuariosDentroHoje() {
       }
     }
 
-    // Se ainda não existe, adiciona
     if (idx == -1) {
       if (numUidsDia < MAX_UIDS_DIA) {
         uidsDia[numUidsDia] = uidUsuario;
-        contagens[numUidsDia] = 1; // primeira vez
+        contagens[numUidsDia] = 1;
         numUidsDia++;
       }
     } else {
-      contagens[idx]++; // mais uma ocorrência
+      contagens[idx]++;
     }
   }
 
   f.close();
 
-  // Agora verifica quem tem contagem ímpar
   size_t totalDentro = 0;
   for (int i = 0; i < numUidsDia; i++) {
     if (contagens[i] % 2 == 1) {
@@ -763,9 +707,7 @@ void reconnectMQTT() {
   }
 }
 
-
-// --------- MQTT: callback e reconexão ---------
-
+// MQTT callback
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String msg;
   for (unsigned int i = 0; i < length; i++) {
@@ -786,19 +728,17 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  const char* cmd  = doc["cmd"];   // ex: "start_register" ou "get_history"
-  const char* tipo = doc["tipo"];  // "parent" ou "employee" (p/ cadastro)
+  const char* cmd  = doc["cmd"];
+  const char* tipo = doc["tipo"];
 
   if (!cmd) return;
 
-  // === NOVO: comando vindo do front para pedir o historico ===
   if (strcmp(cmd, "get_history") == 0) {
     Serial.println("Comando MQTT: get_history -> enviando arquivo de movimentacoes");
     publishMovHistoryToMQTT();
     return;
   }
 
-  // === JÁ EXISTENTE: fluxo de cadastro ===
   if (strcmp(cmd, "start_register") == 0 && tipo) {
 
     if (mqttClient.connected()) {
@@ -815,21 +755,33 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-
-// --------- Movimentação: arquivo + MQTT ----------
-
-void registrarMovimentacao(const String &uidFuncionario, const String &uidUsuario) {
+// Registrar movimentação
+void registrarMovimentacao(const String &uidFuncionario,
+                           const String &uidUsuario,
+                           const String &tipoMov) {
   String dataStr, horaStr;
   if (!obterDataHoraAtual(dataStr, horaStr)) {
     dataStr = "data_indisponivel";
     horaStr = "hora_indisponivel";
   }
 
-  String linha = "-" + uidFuncionario + "- liberou -" + uidUsuario +
-                 "- às -" + horaStr + "- do dia -" + dataStr + "-";
+  String linha;
+  String tipo = tipoMov;
+  tipo.toLowerCase();
+
+  if (tipo == "entrada") {
+    linha = "-" + uidFuncionario + "- recebeu -" + uidUsuario +
+            "- às -" + horaStr + "- do dia -" + dataStr + "-";
+  } else if (tipo == "saída" || tipo == "saida") {
+    linha = "-" + uidFuncionario + "- liberou -" + uidUsuario +
+            "- às -" + horaStr + "- do dia -" + dataStr + "-";
+  } else {
+    linha = "-" + uidFuncionario + "- liberou -" + uidUsuario +
+            "- às -" + horaStr + "- do dia -" + dataStr + "-";
+  }
 
   if (appendLine(MOVIMENTACOES_FILE, linha)) {
-    Serial.println("Movimentacao registrado: " + linha);
+    Serial.println("Movimentacao registrada: " + linha);
   } else {
     Serial.println("ERRO ao registrar movimentacao em MOVIMENTACOES_FILE.");
   }
@@ -853,123 +805,252 @@ void registrarMovimentacao(const String &uidFuncionario, const String &uidUsuari
   }
 }
 
-// --------- envio de UID para a fila (String) ----------
+// --------- ENTRADA ----------
+// Primeiro: USUÁRIO, depois: FUNCIONÁRIO
+void processarEntradaCartao(const String &uidLido) {
+  String uid = uidLido;
+  uid.trim();
+  uid.toLowerCase();
 
-void enviarUidParaFila(const String &uidString) {
-  if (filaCartoes == NULL) return;
+  bool ehUsuario     = isRegistered(CARDS_FILE,  uid);
+  bool ehFuncionario = isRegistered(ADMINS_FILE, uid);
 
-  String copia = uidString;
+  if (!aguardandoSegundoEntrada) {
+    // PRIMEIRO CARTÃO: deve ser USUÁRIO
+    if (!ehUsuario && !ehFuncionario) {
+      Serial.println("Falha (ENTRADA): primeiro cartao nao cadastrado.");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      leituraHabilitada = false;
+      return;
+    }
 
-  if (xQueueSend(filaCartoes, &copia, pdMS_TO_TICKS(100)) != pdTRUE) {
-    Serial.println("Aviso: filaCartoes cheia, UID descartado.");
+    if (ehFuncionario && !ehUsuario) {
+      Serial.println("Falha (ENTRADA): primeiro cartao deve ser de USUARIO, mas e FUNCIONARIO.");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      leituraHabilitada = false;
+      return;
+    }
+
+    if (ehUsuario && ehFuncionario) {
+      Serial.println("Falha (ENTRADA): UID em usuarios E funcionarios (configuracao invalida).");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      leituraHabilitada = false;
+      return;
+    }
+
+    uidUsuarioEntradaPendente = uid;
+    aguardandoSegundoEntrada  = true;
+
+    Serial.print("ENTRADA: cartao de USUARIO OK (");
+    Serial.print(uidUsuarioEntradaPendente);
+    Serial.println("). Aproxime agora o cartao do FUNCIONARIO.");
+
+    digitalWrite(LED_YELLOW, HIGH);
+    delay(300);
+    digitalWrite(LED_YELLOW, LOW);
+    return;
   } else {
-    Serial.print("UID enfileirado: ");
-    Serial.println(copia);
+    // SEGUNDO CARTÃO: deve ser FUNCIONARIO
+    if (uid == uidUsuarioEntradaPendente) {
+      Serial.println("Falha (ENTRADA): mesmo cartao nao pode ser USUARIO e FUNCIONARIO.");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      aguardandoSegundoEntrada = false;
+      leituraHabilitada        = false;
+      return;
+    }
+
+    if (!ehUsuario && !ehFuncionario) {
+      Serial.println("Falha (ENTRADA): segundo cartao nao cadastrado.");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      aguardandoSegundoEntrada = false;
+      leituraHabilitada        = false;
+      return;
+    }
+
+    if (ehUsuario && !ehFuncionario) {
+      Serial.println("Falha (ENTRADA): segundo cartao deve ser FUNCIONARIO, mas e USUARIO.");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      aguardandoSegundoEntrada = false;
+      leituraHabilitada        = false;
+      return;
+    }
+
+    if (ehUsuario && ehFuncionario) {
+      Serial.println("Falha (ENTRADA): segundo UID em usuarios E funcionarios (configuracao invalida).");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      aguardandoSegundoEntrada = false;
+      leituraHabilitada        = false;
+      return;
+    }
+
+    String uidFuncionario = uid;
+    String uidUsuario     = uidUsuarioEntradaPendente;
+
+    aguardandoSegundoEntrada  = false;
+    uidUsuarioEntradaPendente = "";
+
+    Serial.println("✅ Combinacao valida para ENTRADA (USUARIO + FUNCIONARIO).");
+    registrarMovimentacao(uidFuncionario, uidUsuario, "entrada");
+
+    digitalWrite(LED_GREEN, HIGH);
+    digitalWrite(LED_RED, LOW);
+    delay(2000);
+    digitalWrite(LED_GREEN, LOW);
+
+    xSemaphoreGive(semAcessoLiberado);
+    if (xSemaphoreTake(semAcessoLiberado, 0) == pdTRUE) {
+      Serial.println("Semaforo semAcessoLiberado sinalizado e consumido (entrada).");
+    }
+
+    // desabilita leituras até o próximo comando no terminal
+    leituraHabilitada = false;
   }
 }
 
-// --------- TODA a lógica de validação em UMA função ----------
+// --------- SAÍDA ----------
+// Primeiro: FUNCIONARIO, depois: USUARIO
+void processarSaidaCartao(const String &uidLido) {
+  String uid = uidLido;
+  uid.trim();
+  uid.toLowerCase();
 
-void processarCartaoLido(const String &uidLido) {
-  if (filaCartoes == NULL || semAcessoLiberado == NULL) {
-    Serial.println("Erro: fila ou semaforo nao inicializados.");
+  bool ehUsuario     = isRegistered(CARDS_FILE,  uid);
+  bool ehFuncionario = isRegistered(ADMINS_FILE, uid);
+
+  if (!aguardandoSegundoSaida) {
+    // PRIMEIRO CARTÃO: deve ser FUNCIONARIO
+    if (!ehUsuario && !ehFuncionario) {
+      Serial.println("Falha (SAIDA): primeiro cartao nao cadastrado.");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      leituraHabilitada = false;
+      return;
+    }
+
+    if (ehUsuario && !ehFuncionario) {
+      Serial.println("Falha (SAIDA): primeiro cartao deve ser FUNCIONARIO, mas e USUARIO.");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      leituraHabilitada = false;
+      return;
+    }
+
+    if (ehUsuario && ehFuncionario) {
+      Serial.println("Falha (SAIDA): UID em usuarios E funcionarios (configuracao invalida).");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      leituraHabilitada = false;
+      return;
+    }
+
+    uidFuncionarioSaidaPendente = uid;
+    aguardandoSegundoSaida      = true;
+
+    Serial.print("SAIDA: cartao de FUNCIONARIO OK (");
+    Serial.print(uidFuncionarioSaidaPendente);
+    Serial.println("). Aproxime agora o cartao do USUARIO.");
+
+    digitalWrite(LED_YELLOW, HIGH);
+    delay(300);
+    digitalWrite(LED_YELLOW, LOW);
     return;
-  }
-
-  enviarUidParaFila(uidLido);
-  cartoesPendentes++;
-
-  if (cartoesPendentes < 2) {
-    Serial.println("Aguardando segundo cartao para validacao...");
-    return;
-  }
-
-  cartoesPendentes = 0;
-
-  String uid1, uid2;
-
-  Serial.println("Obtendo primeiro cartao da fila...");
-  if (xQueueReceive(filaCartoes, &uid1, pdMS_TO_TICKS(0)) != pdTRUE) {
-    Serial.println("Falha ao obter o primeiro cartao da fila.");
-    return;
-  }
-
-  Serial.println("Obtendo segundo cartao da fila...");
-  if (xQueueReceive(filaCartoes, &uid2, pdMS_TO_TICKS(0)) != pdTRUE) {
-    Serial.println("Falha ao obter o segundo cartao da fila.");
-    return;
-  }
-
-  uid1.trim(); uid1.toLowerCase();
-  uid2.trim(); uid2.toLowerCase();
-
-  Serial.print("UID1 recebido: "); Serial.println(uid1);
-  Serial.print("UID2 recebido: "); Serial.println(uid2);
-
-  bool uid1EhUsuario      = isRegistered(CARDS_FILE,  uid1);
-  bool uid1EhFuncionario  = isRegistered(ADMINS_FILE, uid1);
-
-  bool uid2EhUsuario      = isRegistered(CARDS_FILE,  uid2);
-  bool uid2EhFuncionario  = isRegistered(ADMINS_FILE, uid2);
-
-  if ((!uid1EhUsuario && !uid1EhFuncionario) ||
-      (!uid2EhUsuario && !uid2EhFuncionario)) {
-    Serial.println("Falha: um ou ambos os UIDs nao estao cadastrados.");
-    digitalWrite(LED_RED, HIGH);
-    digitalWrite(LED_GREEN, LOW);
-    delay(2000);
-    digitalWrite(LED_RED, LOW);
-    return;
-  }
-
-  if ((uid1EhUsuario && uid1EhFuncionario) ||
-      (uid2EhUsuario && uid2EhFuncionario)) {
-    Serial.println("Falha: UID encontrado em usuarios E funcionarios (configuracao invalida).");
-    digitalWrite(LED_RED, HIGH);
-    digitalWrite(LED_GREEN, LOW);
-    delay(2000);
-    digitalWrite(LED_RED, LOW);
-    return;
-  }
-
-  bool casoValido =
-      ( (uid1EhUsuario && uid2EhFuncionario) ||
-        (uid1EhFuncionario && uid2EhUsuario) );
-
-  if (!casoValido) {
-    Serial.println("Falha: combinacao invalida (dois usuarios ou dois funcionarios).");
-    digitalWrite(LED_RED, HIGH);
-    digitalWrite(LED_GREEN, LOW);
-    delay(2000);
-    digitalWrite(LED_RED, LOW);
-    return;
-  }
-
-  String uidFuncionario, uidUsuario;
-  if (uid1EhFuncionario && uid2EhUsuario) {
-    uidFuncionario = uid1;
-    uidUsuario     = uid2;
   } else {
-    uidFuncionario = uid2;
-    uidUsuario     = uid1;
-  }
+    // SEGUNDO CARTÃO: deve ser USUARIO
+    if (uid == uidFuncionarioSaidaPendente) {
+      Serial.println("Falha (SAIDA): mesmo cartao nao pode ser FUNCIONARIO e USUARIO.");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      aguardandoSegundoSaida = false;
+      leituraHabilitada      = false;
+      return;
+    }
 
-  Serial.println("✅ Combinacao valida: 1 funcionario + 1 usuario.");
+    if (!ehUsuario && !ehFuncionario) {
+      Serial.println("Falha (SAIDA): segundo cartao nao cadastrado.");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      aguardandoSegundoSaida = false;
+      leituraHabilitada      = false;
+      return;
+    }
 
-  registrarMovimentacao(uidFuncionario, uidUsuario);
+    if (!ehUsuario && ehFuncionario) {
+      Serial.println("Falha (SAIDA): segundo cartao deve ser USUARIO, mas e FUNCIONARIO.");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      aguardandoSegundoSaida = false;
+      leituraHabilitada      = false;
+      return;
+    }
 
-  digitalWrite(LED_GREEN, HIGH);
-  digitalWrite(LED_RED, LOW);
-  delay(2000);
-  digitalWrite(LED_GREEN, LOW);
+    if (ehUsuario && ehFuncionario) {
+      Serial.println("Falha (SAIDA): segundo UID em usuarios E funcionarios (configuracao invalida).");
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, LOW);
+      delay(2000);
+      digitalWrite(LED_RED, LOW);
+      aguardandoSegundoSaida = false;
+      leituraHabilitada      = false;
+      return;
+    }
 
-  xSemaphoreGive(semAcessoLiberado);
-  if (xSemaphoreTake(semAcessoLiberado, 0) == pdTRUE) {
-    Serial.println("Semaforo semAcessoLiberado sinalizado e consumido.");
+    String uidFuncionario = uidFuncionarioSaidaPendente;
+    String uidUsuario     = uid;
+
+    aguardandoSegundoSaida      = false;
+    uidFuncionarioSaidaPendente = "";
+
+    Serial.println("✅ Combinacao valida para SAIDA (FUNCIONARIO + USUARIO).");
+    registrarMovimentacao(uidFuncionario, uidUsuario, "saída");
+
+    digitalWrite(LED_GREEN, HIGH);
+    digitalWrite(LED_RED, LOW);
+    delay(2000);
+    digitalWrite(LED_GREEN, LOW);
+
+    xSemaphoreGive(semAcessoLiberado);
+    if (xSemaphoreTake(semAcessoLiberado, 0) == pdTRUE) {
+      Serial.println("Semaforo semAcessoLiberado sinalizado e consumido (saida).");
+    }
+
+    // desabilita leituras até o próximo comando no terminal
+    leituraHabilitada = false;
   }
 }
 
-// ainda existe, mas não está sendo usada nesse fluxo de dupla
 void checkCardRegistered(const String &uidString) {
   if (isRegistered(CARDS_FILE, uidString)) {
     Serial.println("✅ Cartao cadastrado em usuarios.txt! LED VERDE...");
@@ -978,7 +1059,7 @@ void checkCardRegistered(const String &uidString) {
     delay(2000);
     digitalWrite(LED_GREEN, LOW);
   } else {
-    Serial.println("❌ Cartao NÃO cadastrado em usuarios.txt! LED VERMELHO...");
+    Serial.println("❌ Cartao NAO cadastrado em usuarios.txt! LED VERMELHO...");
     digitalWrite(LED_RED, HIGH);
     digitalWrite(LED_GREEN, LOW);
     delay(2000);
@@ -1021,21 +1102,26 @@ void setup() {
     "'L' = listar admins (apenas UIDs) \n"
     "'u' = quantidade + UIDs de usuarios \n"
     "'f' = quantidade + UIDs de admins \n"
-    "'t' = usuarios atrasados (primeira passagem apos 08:15 hoje) \n"
+    "'t' = usuarios atrasados (primeira entrada apos 08:15 hoje) \n"
     "'p' = usuarios que estao dentro (registros impares hoje) \n"
+    "'e' = iniciar fluxo de ENTRADA (USUARIO -> FUNCIONARIO) \n"
+    "'s' = iniciar fluxo de SAIDA   (FUNCIONARIO -> USUARIO) \n"
     "'d' = deletar UID \n"
-    "'m' = listar movimentacoes"
+    "'m' = listar movimentacoes + enviar historico via MQTT"
   ));
 
   filaCartoes = xQueueCreate(8, sizeof(String));
   if (filaCartoes == NULL) {
-    Serial.println("ERRO: nao foi possivel criar filaCartoes!");
+    Serial.println("Aviso: filaCartoes nao criada (nao usada no fluxo atual).");
   }
 
   semAcessoLiberado = xSemaphoreCreateBinary();
   if (semAcessoLiberado == NULL) {
     Serial.println("ERRO: nao foi possivel criar semAcessoLiberado!");
   }
+
+  Serial.println("Modo inicial: ENTRADA, mas leitura de cartoes DESABILITADA.");
+  Serial.println("Use 'e' ou 's' no terminal para iniciar um fluxo de entrada/saida.");
 }
 
 void loop() {
@@ -1044,31 +1130,53 @@ void loop() {
   }
   mqttClient.loop();
 
+  // Comandos via Serial
   if (Serial.available()) {
-  char c = Serial.read();
+    char c = Serial.read();
 
-  if (c == 'c' || c == 'C') registerCard(CARDS_FILE, "parent");
-  if (c == 'a' || c == 'A') registerCard(ADMINS_FILE, "employee");
+    if (c == 'c' || c == 'C') registerCard(CARDS_FILE, "parent");
+    if (c == 'a' || c == 'A') registerCard(ADMINS_FILE, "employee");
 
-  if (c == 'l')             listRegistered(CARDS_FILE);
-  if (c == 'L')             listRegistered(ADMINS_FILE);
-  if (c == 'u' || c == 'U') countRegisteredAndShow(CARDS_FILE);
-  if (c == 'f' || c == 'F') countRegisteredAndShow(ADMINS_FILE);
-  if (c == 't' || c == 'T') listarAtrasosDepoisDe815();
-  if (c == 'p' || c == 'P') listarUsuariosDentroHoje();
-  if (c == 'm' || c == 'M') {
-  listMovimentacoes();        // continua mostrando na serial
-  publishMovHistoryToMQTT();  // e agora também manda pro dashboard
+    if (c == 'l')             listRegistered(CARDS_FILE);
+    if (c == 'L')             listRegistered(ADMINS_FILE);
+    if (c == 'u' || c == 'U') countRegisteredAndShow(CARDS_FILE);
+    if (c == 'f' || c == 'F') countRegisteredAndShow(ADMINS_FILE);
+    if (c == 't' || c == 'T') listarAtrasosDepoisDe815();
+    if (c == 'p' || c == 'P') listarUsuariosDentroHoje();
+
+    if (c == 'm' || c == 'M') {
+      listMovimentacoes();
+      publishMovHistoryToMQTT();
+    }
+
+    if (c == 'd' || c == 'D') {
+      Serial.println("Digite o UID a deletar:");
+      while (!Serial.available()) delay(10);
+      String uid = Serial.readStringUntil('\n');
+      uid.trim();
+      uid.toLowerCase();
+      deleteCard(uid);
+    }
+
+    if (c == 'e' || c == 'E') {
+      modoAtual = MODO_ENTRADA;
+      aguardandoSegundoEntrada = false;
+      aguardandoSegundoSaida   = false;
+      leituraHabilitada        = true;
+      Serial.println("Fluxo de ENTRADA iniciado. Aproxime o cartao do USUARIO.");
+    }
+
+    if (c == 's' || c == 'S') {
+      modoAtual = MODO_SAIDA;
+      aguardandoSegundoEntrada = false;
+      aguardandoSegundoSaida   = false;
+      leituraHabilitada        = true;
+      Serial.println("Fluxo de SAIDA iniciado. Aproxime o cartao do FUNCIONARIO.");
+    }
   }
-  if (c == 'd' || c == 'D') {
-    Serial.println("Digite o UID a deletar:");
-    while (!Serial.available()) delay(10);
-    String uid = Serial.readStringUntil('\n');
-    uid.trim();
-    uid.toLowerCase();
-    deleteCard(uid);
-  }
-}
+
+  // Leitura de cartões só acontece se habilitada pelo terminal
+  if (!leituraHabilitada) return;
 
   if (!mfrc522.PICC_IsNewCardPresent()) return;
   if (!mfrc522.PICC_ReadCardSerial())   return;
@@ -1081,7 +1189,11 @@ void loop() {
   Serial.print("UID em texto: ");
   Serial.println(uidString);
 
-  processarCartaoLido(uidString);
+  if (modoAtual == MODO_ENTRADA) {
+    processarEntradaCartao(uidString);
+  } else {
+    processarSaidaCartao(uidString);
+  }
 
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
