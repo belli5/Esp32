@@ -627,6 +627,7 @@ size_t listarUsuariosDentroHoje() {
   int contagens[MAX_UIDS_DIA];
   int numUidsDia = 0;
 
+  // Inicializa contagens
   for (int i = 0; i < MAX_UIDS_DIA; i++) {
     contagens[i] = 0;
   }
@@ -641,16 +642,29 @@ size_t listarUsuariosDentroHoje() {
       continue;
     }
 
+    // Só consideramos o dia atual
     if (dataLinha != dataHoje) continue;
 
+    // UID do usuário (segunda parte da linha)
     String uidUsuario = user;
     uidUsuario.trim();
     uidUsuario.toLowerCase();
 
+    // Garante que é um usuário (e não funcionário)
     if (!isRegistered(CARDS_FILE, uidUsuario)) {
       continue;
     }
 
+    // Descobre se a linha é de entrada ("recebeu") ou saída ("liberou")
+    bool isEntrada = line.indexOf(" recebeu -") >= 0;
+    bool isSaida   = line.indexOf(" liberou -") >= 0;
+
+    if (!isEntrada && !isSaida) {
+      // Linha em formato inesperado (ou outro tipo), ignora
+      continue;
+    }
+
+    // Procura o UID no array
     int idx = -1;
     for (int i = 0; i < numUidsDia; i++) {
       if (uidsDia[i] == uidUsuario) {
@@ -659,38 +673,57 @@ size_t listarUsuariosDentroHoje() {
       }
     }
 
+    // Se ainda não existe, adiciona
     if (idx == -1) {
       if (numUidsDia < MAX_UIDS_DIA) {
-        uidsDia[numUidsDia] = uidUsuario;
-        contagens[numUidsDia] = 1;
+        uidsDia[numUidsDia]   = uidUsuario;
+        contagens[numUidsDia] = 0;  // começa em zero
+        idx = numUidsDia;
         numUidsDia++;
+      } else {
+        // estourou limite de UIDs no dia — ignora o resto
+        continue;
       }
-    } else {
+    }
+
+    // Aplica a regra:
+    // - ENTRADA  -> +1
+    // - SAÍDA    -> -1 (sem ficar < 0, pra evitar bug de saída “extra”)
+    if (isEntrada) {
       contagens[idx]++;
+    } else if (isSaida) {
+      if (contagens[idx] > 0) {
+        contagens[idx]--;
+      }
+      // se estiver 0 e chegar uma saída, simplesmente ignora (não deixa negativo)
     }
   }
 
   f.close();
 
-  size_t totalDentro = 0;
+  // Quantidade total de pendências = soma de todos os contadores positivos
+  size_t totalPendencias = 0;
   for (int i = 0; i < numUidsDia; i++) {
-    if (contagens[i] % 2 == 1) {
-      totalDentro++;
+    if (contagens[i] > 0) {
+      totalPendencias += contagens[i];
     }
   }
 
-  Serial.println(totalDentro);
-  if (totalDentro == 0) {
+  Serial.println(totalPendencias);
+  if (totalPendencias == 0) {
     return 0;
   }
 
+  // Agora imprime cada UID tantas vezes quanto seu contador
   for (int i = 0; i < numUidsDia; i++) {
-    if (contagens[i] % 2 == 1) {
-      Serial.println(uidsDia[i]);
+    if (contagens[i] > 0) {
+      for (int k = 0; k < contagens[i]; k++) {
+        Serial.println(uidsDia[i]);
+      }
     }
   }
 
-  return totalDentro;
+  return totalPendencias;
 }
 
 void reconnectMQTT() {
