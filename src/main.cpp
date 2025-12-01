@@ -348,7 +348,9 @@ void registerCard(const char* fileName, const char* tipoCadastro) {
   // avisa o front que o cadastro começou
   if (mqttClient.connected()) {
     String payload = "{";
+    payload += "\"context\":\"cadastro\",";
     payload += "\"event\":\"cadastro_start\",";
+    payload += "\"status\":\"waiting\",";
     payload += "\"tipo\":\"";     payload += tipoCadastro; payload += "\"";
     payload += "}";
     mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
@@ -361,10 +363,11 @@ void registerCard(const char* fileName, const char* tipoCadastro) {
       digitalWrite(LED_RED, HIGH); delay(200);
       digitalWrite(LED_RED, LOW);
 
-      // avisa timeout pro front
       if (mqttClient.connected()) {
         String payload = "{";
+        payload += "\"context\":\"cadastro\",";
         payload += "\"event\":\"cadastro_timeout\",";
+        payload += "\"status\":\"error\",";
         payload += "\"tipo\":\"";     payload += tipoCadastro; payload += "\"";
         payload += "}";
         mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
@@ -380,34 +383,38 @@ void registerCard(const char* fileName, const char* tipoCadastro) {
     Serial.print("[CADASTRO] UID lido: ");
     Serial.println(uidString);
 
+    // 1) JÁ CADASTRADO -> LED AMARELO + status "exists"
     if (isRegistered(fileName, uidString)) {
       Serial.println("[CADASTRO] UID já cadastrado nesse arquivo.");
-      digitalWrite(LED_RED, HIGH); delay(300);
-      digitalWrite(LED_RED, LOW);
+      digitalWrite(LED_YELLOW, HIGH); delay(300);
+      digitalWrite(LED_YELLOW, LOW);
 
-      // avisa que já estava cadastrado
       if (mqttClient.connected()) {
         String payload = "{";
+        payload += "\"context\":\"cadastro\",";
         payload += "\"event\":\"cadastro_already_registered\",";
+        payload += "\"status\":\"exists\",";
         payload += "\"tipo\":\"";     payload += tipoCadastro; payload += "\",";
         payload += "\"uid\":\"";      payload += uidString;    payload += "\"";
         payload += "}";
         mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
       }
-    } else {
+    }
+    // 2) NOVO -> grava no arquivo, LED VERDE + status "success"
+    else {
       bool ok = appendLine(fileName, uidString);
       if (ok) {
         Serial.print("[CADASTRO] Salvo em ");
         Serial.println(fileName);
-        digitalWrite(LED_YELLOW, HIGH); delay(500);
-        digitalWrite(LED_YELLOW, LOW);
-        digitalWrite(LED_GREEN, HIGH); delay(300);
+
+        digitalWrite(LED_GREEN, HIGH); delay(400);
         digitalWrite(LED_GREEN, LOW);
 
-        // sucesso – manda pro front
         if (mqttClient.connected()) {
           String payload = "{";
+          payload += "\"context\":\"cadastro\",";
           payload += "\"event\":\"cadastro_success\",";
+          payload += "\"status\":\"success\",";
           payload += "\"tipo\":\"";     payload += tipoCadastro; payload += "\",";
           payload += "\"uid\":\"";      payload += uidString;    payload += "\"";
           payload += "}";
@@ -418,10 +425,11 @@ void registerCard(const char* fileName, const char* tipoCadastro) {
         digitalWrite(LED_RED, HIGH); delay(400);
         digitalWrite(LED_RED, LOW);
 
-        // erro ao salvar – manda pro front
         if (mqttClient.connected()) {
           String payload = "{";
+          payload += "\"context\":\"cadastro\",";
           payload += "\"event\":\"cadastro_error\",";
+          payload += "\"status\":\"error\",";
           payload += "\"tipo\":\"";       payload += tipoCadastro; payload += "\",";
           payload += "\"reason\":\"fs_write_failed\"";
           payload += "}";

@@ -160,11 +160,11 @@ export const LedDot = styled.div`
   height: 18px;
   border-radius: 999px;
   background: ${({ status }) => {
-    if (status === "success") return "#22c55e"; // verde
-    if (status === "error") return "#ef4444";   // vermelho
-    if (status === "waiting") return "#facc15"; // amarelo
-    return "#9ca3af"; // cinza (idle)
-  }};
+  if (status === "success") return "green";
+  if (status === "error") return "red";
+  if (status === "waiting" || status === "exists") return "yellow";
+  return "gray";
+}};
   box-shadow: ${({ status }) =>
     status === "idle"
       ? "none"

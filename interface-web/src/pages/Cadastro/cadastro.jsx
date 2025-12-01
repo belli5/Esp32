@@ -1,11 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import mqtt from "mqtt";
-
-const MQTT_URL = "ws://172.20.10.2:9001"; // porta de WebSocket do broker
-const TOPIC_CMD = "portaria/comandos";
-const TOPIC_STATUS = "portaria/status";
-
 
 import {
   PageWrapper,
@@ -28,20 +23,25 @@ import {
   SimButton,
 } from "./cadastro.styles";
 
+const MQTT_URL = "ws://172.20.10.2:9001"; // porta de WebSocket do broker
+const TOPIC_CMD = "portaria/comandos";
+const TOPIC_STATUS = "portaria/status";
+
 export default function Cadastrar() {
   const navigate = useNavigate();
   const location = useLocation();
 
   const activeIndex = location.pathname === "/cadastro" ? 1 : 0;
 
-  const [mode, setMode] = useState(null);             // 'parent' | 'employee'
-  const [status, setStatus] = useState("idle");       // 'idle' | 'waiting' | 'success' | 'error'
+  const [mode, setMode] = useState(null); // 'parent' | 'employee'
+  const [status, setStatus] = useState("idle"); // 'idle' | 'waiting' | 'success' | 'error' | 'exists'
   const [client, setClient] = useState(null);
+
   const goHome = () => navigate("/");
   const goCadastro = () => navigate("/cadastro");
   const goDashboard = () => navigate("/dashboard");
 
-    React.useEffect(() => {
+  useEffect(() => {
     // conecta no broker via WebSocket
     const c = mqtt.connect(MQTT_URL, {
       clientId: "front-web-" + Math.random().toString(16).slice(2),
@@ -58,11 +58,25 @@ export default function Cadastrar() {
       if (topic !== TOPIC_STATUS) return;
       try {
         const msg = JSON.parse(payload.toString());
+        console.log("STATUS MQTT:", msg);
+
         if (msg.context === "cadastro") {
-          // status vindo da ESP32
-          if (msg.status === "waiting") setStatus("waiting");
-          if (msg.status === "success") setStatus("success");
-          if (msg.status === "error") setStatus("error");
+          // 1) se vier um status direto (waiting, success, error, exists)
+          if (msg.status) {
+            setStatus(msg.status);
+            return;
+          }
+
+          // 2) fallback usando event, se vier no formato antigo
+          if (msg.event === "cadastro_success") {
+            setStatus("success");
+          } else if (msg.event === "cadastro_already_registered") {
+            setStatus("exists");
+          } else if (msg.event === "cadastro_error") {
+            setStatus("error");
+          } else if (msg.event === "cadastro_start") {
+            setStatus("waiting");
+          }
         }
       } catch (e) {
         console.error("Erro ao parsear status MQTT:", e);
@@ -78,7 +92,6 @@ export default function Cadastrar() {
     };
   }, []);
 
-
   function selectMode(nextMode) {
     setMode(nextMode);
     setStatus("waiting");
@@ -86,7 +99,7 @@ export default function Cadastrar() {
     if (client && client.connected) {
       const payload = JSON.stringify({
         cmd: "start_register",
-        tipo: nextMode,           
+        tipo: nextMode,
       });
       client.publish(TOPIC_CMD, payload);
       console.log("Comando de cadastro enviado:", payload);
@@ -100,11 +113,12 @@ export default function Cadastrar() {
     employee: "Aguardando cartão do funcionário...",
   };
 
-  const statusTextByStatus = {
+    const statusTextByStatus = {
     idle: "Selecione uma opção para iniciar o cadastro.",
     waiting: mode ? labelByMode[mode] : "Aguardando cartão...",
-    success: "Cartão lido com sucesso! Dados prontos para salvar.",
-    error: "Falha na leitura do cartão. Tente aproximar novamente.",
+    success: "Usuário cadastrado com sucesso!",
+    exists: "Usuário já cadastrado.",              // 👈 NOVO
+    error: "Falha no cadastro. Tente aproximar novamente.",
   };
 
   return (
@@ -132,11 +146,11 @@ export default function Cadastrar() {
             </TabButton>
 
             <TabButton
-                type="button"
-                active={activeIndex === 2}
-                onClick={goDashboard}
+              type="button"
+              active={activeIndex === 2}
+              onClick={goDashboard}
             >
-                Dashboard
+              Dashboard
             </TabButton>
           </TabsTrack>
         </TabsBar>
