@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
+import mqtt from "mqtt";
 
 import {
   PageWrapper,
@@ -28,46 +29,112 @@ import {
   LegendDot,
 } from "./dashboard.styles";
 
+const MQTT_URL = "ws://172.20.10.2:9001"; 
+
+const diasOrdem = ["Seg", "Ter", "Qua", "Qui", "Sex"];
+const mapDowToLabel = {
+  1: "Seg",
+  2: "Ter",
+  3: "Qua",
+  4: "Qui",
+  5: "Sex",
+};
+
+function parseDateBR(dateStr) {
+  const [d, m, y] = dateStr.split("/").map(Number);
+  return new Date(y, m - 1, d);
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // 0 = Home, 1 = Cadastro, 2 = Dashboard
   let activeIndex = 0;
-  if (location.pathname === "/cadastro") {
-    activeIndex = 1;
-  } else if (location.pathname === "/dashboard") {
-    activeIndex = 2;
-  }
+  if (location.pathname === "/cadastro") activeIndex = 1;
+  else if (location.pathname === "/dashboard") activeIndex = 2;
 
   const goHome = () => navigate("/");
   const goCadastro = () => navigate("/cadastro");
   const goDashboard = () => navigate("/dashboard");
 
-  // ---- MOCKS DE DADOS (depois você troca por API/real) ----
-  const presencasSemana = [100, 80, 60, 100, 40]; // seg a sex (%)
-  const entradasVsSaidas = [
-    { label: "Entradas", value: 42 },
-    { label: "Saídas", value: 39 },
-  ];
-  const responsaveisQueForam = [
-    { label: "Pais", value: 32 },
-    { label: "Avós", value: 7 },
-    { label: "Outros", value: 4 },
-  ];
+  // 🟦 Array de movimentações recebidas via MQTT
+  const [movs, setMovs] = useState([]);
 
-  const semana = [
-    { dia: "Seg", presente: true },
-    { dia: "Ter", presente: true },
-    { dia: "Qua", presente: false },
-    { dia: "Qui", presente: true },
-    { dia: "Sex", presente: false },
-  ];
+  useEffect(() => {
+    const client = mqtt.connect(MQTT_URL);
+
+    client.on("connect", () => {
+      console.log("MQTT conectado no FRONT!");
+      client.subscribe("portaria/movimentacoes");
+
+      // 👇 assim que conectar, pede o historico para a ESP32
+      const cmd = {
+        cmd: "get_history",
+        // pode ter outros campos no futuro se quiser filtrar
+      };
+      client.publish("portaria/comandos", JSON.stringify(cmd));
+    });
+
+    client.on("message", (topic, msg) => {
+      if (topic !== "portaria/movimentacoes") return;
+
+      try {
+        const data = JSON.parse(msg.toString());
+        console.log("Mov recebida:", data);
+        setMovs((prev) => [...prev, data]);
+      } catch (e) {
+        console.error("MQTT JSON inválido:", e);
+      }
+    });
+
+    return () => client.end(true);
+  }, []);
+
+
+  // 📊 Transformar movimentações em dados pros gráficos
+  const { presencasSemana, semanaResumo, entradasVsSaidas } = useMemo(() => {
+    const contDiaSem = { Seg: 0, Ter: 0, Qua: 0, Qui: 0, Sex: 0 };
+
+    movs.forEach(({ data }) => {
+      const d = parseDateBR(data);
+      const label = mapDowToLabel[d.getDay()];
+      if (label) contDiaSem[label] += 1;
+    });
+
+    const maxDia = Math.max(1, ...diasOrdem.map((d) => contDiaSem[d]));
+    const pres = diasOrdem.map((dia) =>
+      Math.round((contDiaSem[dia] / maxDia) * 100)
+    );
+
+    const agora = new Date();
+    const hojeStr = agora.toLocaleDateString("pt-BR");
+
+    // mesma lógica do "p" do seu backend
+    const contHoje = {};
+    movs.forEach((m) => {
+      if (m.data === hojeStr) {
+        contHoje[m.usuario] = (contHoje[m.usuario] || 0) + 1;
+      }
+    });
+
+    const dentroHoje = Object.values(contHoje).filter((c) => c % 2 === 1).length;
+
+    return {
+      presencasSemana: pres,
+      semanaResumo: diasOrdem.map((dia) => ({
+        dia,
+        presente: contDiaSem[dia] > 0,
+      })),
+      entradasVsSaidas: [
+        { label: "Entradas", value: movs.length },
+        { label: "Saídas", value: Math.max(movs.length - dentroHoje, 0) },
+      ],
+    };
+  }, [movs]);
 
   return (
     <PageWrapper>
       <Card>
-        {/* Tabs topo */}
         <TabsBar>
           <TabsTrack>
             <Slider activeIndex={activeIndex} />
@@ -84,37 +151,32 @@ export default function Dashboard() {
         </TabsBar>
 
         <Title>Dashboard</Title>
-        <Subtitle>
-          Visão rápida das presenças, entradas e saídas da semana.
-        </Subtitle>
+        <Subtitle>Dados reais recebidos da portaria via MQTT</Subtitle>
 
-        {/* 3 “gráficos” */}
         <ChartsGrid>
-          {/* Gráfico 1 – Presença na semana */}
+          {/* Gráfico 1 */}
           <ChartCard>
             <ChartTitle>Presença no Mês</ChartTitle>
-            <ChartSubtitle>Percentual de dias com presença registrada</ChartSubtitle>
+            <ChartSubtitle>Com base nas movimentações</ChartSubtitle>
 
             <ChartArea>
               <BarRow>
-                {presencasSemana.map((valor, idx) => (
-                  <Bar key={idx} value={valor} />
+                {presencasSemana.map((v, i) => (
+                  <Bar key={i} value={v} />
                 ))}
               </BarRow>
 
               <BarLabelRow>
-                {["Seg", "Ter", "Qua", "Qui", "Sex"].map((d) => (
+                {diasOrdem.map((d) => (
                   <BarLabel key={d}>{d}</BarLabel>
                 ))}
               </BarLabelRow>
             </ChartArea>
           </ChartCard>
 
-          {/* Gráfico 2 – Entradas x Saídas */}
+          {/* Gráfico 2 */}
           <ChartCard>
             <ChartTitle>Entradas x Saídas</ChartTitle>
-            <ChartSubtitle>Comparativo de registros no sistema</ChartSubtitle>
-
             <ChartArea>
               <BarRow>
                 {entradasVsSaidas.map((item) => (
@@ -130,42 +192,42 @@ export default function Dashboard() {
             </ChartArea>
           </ChartCard>
 
-          {/* Gráfico 3 – Tipo de responsável que veio buscar */}
+          {/* Gráfico 3 ainda mockado */}
           <ChartCard>
             <ChartTitle>Quem trouxe/buscou</ChartTitle>
-            <ChartSubtitle>Distribuição por tipo de responsável</ChartSubtitle>
+            <ChartSubtitle>Mock — vamos evoluir depois</ChartSubtitle>
 
             <ChartArea>
               <BarRow>
-                {responsaveisQueForam.map((item) => (
-                  <Bar key={item.label} value={item.value * 4} />
-                ))}
+                <Bar value={40} />
+                <Bar value={20} />
+                <Bar value={10} />
               </BarRow>
 
               <BarLabelRow>
-                {responsaveisQueForam.map((item) => (
-                  <BarLabel key={item.label}>{item.label}</BarLabel>
-                ))}
+                <BarLabel>Pais</BarLabel>
+                <BarLabel>Avós</BarLabel>
+                <BarLabel>Outros</BarLabel>
               </BarLabelRow>
             </ChartArea>
           </ChartCard>
         </ChartsGrid>
 
-        {/* Resumo da semana: foi / não foi */}
+        {/* Resumo Semana */}
         <WeekSummaryCard>
-          <WeekSummaryTitle>Resumo da semana</WeekSummaryTitle>
+          <WeekSummaryTitle>Resumo da Semana</WeekSummaryTitle>
 
           <WeekDaysRow>
-            {semana.map((dia) => (
-              <DayPill key={dia.dia} presente={dia.presente}>
-                {dia.dia}
+            {semanaResumo.map((d) => (
+              <DayPill key={d.dia} presente={d.presente}>
+                {d.dia}
               </DayPill>
             ))}
           </WeekDaysRow>
 
           <LegendRow>
             <LegendItem>
-              <LegendDot type="presente" /> Foi à escola
+              <LegendDot type="presente" /> Foi
             </LegendItem>
             <LegendItem>
               <LegendDot type="ausente" /> Não foi

@@ -29,8 +29,8 @@ const char* ADMINS_FILE        = "/funcionarios.txt";
 const char* MOVIMENTACOES_FILE = "/movimentacoes.txt";
 
 // Configuração de WiFi e de Fuso
-#define WIFI_SSID "iPhone de Gabriel"
-#define WIFI_PASS "12345678"
+#define WIFI_SSID "iPhone de Gabriel Henriques"
+#define WIFI_PASS "bellibelli"
 
 const char* NTP_SERVER      = "pool.ntp.org";
 const long  GMT_OFFSET_SEC  = -3 * 3600;
@@ -48,7 +48,7 @@ uint8_t cartoesPendentes = 0;
 
 // --------- MQTT CONFIG ---------
 const char* MQTT_BROKER       = "172.20.10.2";   // IP do PC com o broker
-const uint16_t MQTT_PORT      = 1884;
+const uint16_t MQTT_PORT      = 1883;
 const char* MQTT_CLIENT_ID    = "esp32-portaria-01";
 const char* MQTT_TOPIC_MOV    = "portaria/movimentacoes";  // eventos de entrada/saida
 const char* MQTT_TOPIC_CMD    = "portaria/comandos";       // comandos vindos do React
@@ -141,6 +141,105 @@ size_t countRegisteredAndShow(const char* fileName) {
   f2.close();
 
   return count;
+}
+
+// Lê uma linha no formato
+// -FUNC- liberou -USUARIO- às -HH:MM:SS- do dia -DD/MM/AAAA-
+// e extrai os campos. Retorna true se conseguiu.
+bool parseMovLine(const String &line,
+                  String &uidFunc, String &uidUser,
+                  String &hora, String &data)
+{
+  String s = line;
+  s.trim();
+  if (!s.length()) return false;
+
+  // 1) UID do funcionário (primeiro -...-)
+  int firstDash  = s.indexOf('-');
+  if (firstDash != 0) return false;
+  int secondDash = s.indexOf('-', firstDash + 1);
+  if (secondDash < 0) return false;
+  uidFunc = s.substring(firstDash + 1, secondDash);
+  uidFunc.trim();
+
+  // 2) UID do usuário: " liberou -<uid>-"
+  const String padLiberou = " liberou -";
+  int idxLib = s.indexOf(padLiberou, secondDash);
+  if (idxLib < 0) return false;
+  int uidUserStart = idxLib + padLiberou.length();
+  int uidUserEnd   = s.indexOf('-', uidUserStart);
+  if (uidUserEnd < 0) return false;
+  uidUser = s.substring(uidUserStart, uidUserEnd);
+  uidUser.trim();
+
+  // 3) Hora: " às -HH:MM:SS-"
+  const String padHora = " às -";
+  int idxHora = s.indexOf(padHora, uidUserEnd);
+  if (idxHora < 0) return false;
+  int horaStart = idxHora + padHora.length();
+  int horaEnd   = s.indexOf('-', horaStart);
+  if (horaEnd < 0) return false;
+  hora = s.substring(horaStart, horaEnd);
+  hora.trim();
+
+  // 4) Data: " do dia -DD/MM/AAAA-"
+  const String padData = " do dia -";
+  int idxData = s.indexOf(padData, horaEnd);
+  if (idxData < 0) return false;
+  int dataStart = idxData + padData.length();
+  int dataEnd   = s.indexOf('-', dataStart);
+  if (dataEnd < 0) return false;
+  data = s.substring(dataStart, dataEnd);
+  data.trim();
+
+  return true;
+}
+
+// Lê TODO o arquivo de movimentações e envia cada linha como JSON
+// no mesmo tópico MQTT_TOPIC_MOV
+void publishMovHistoryToMQTT() {
+  if (!mqttClient.connected()) {
+    Serial.println("MQTT: nao conectado, nao envia historico.");
+    return;
+  }
+
+  File f = SPIFFS.open(MOVIMENTACOES_FILE, FILE_READ);
+  if (!f) {
+    Serial.println("Nenhum arquivo de movimentacoes para enviar.");
+    return;
+  }
+
+  Serial.println("Enviando historico de movimentacoes via MQTT...");
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+
+    String func, user, hora, data;
+    if (!parseMovLine(line, func, user, hora, data)) {
+      Serial.println("Linha de movimentacao em formato inesperado, ignorando:");
+      Serial.println(line);
+      continue;
+    }
+
+    // Monta o mesmo JSON que você já manda em registrarMovimentacao
+    String payload = "{";
+    payload += "\"funcionario\":\"" + func + "\",";
+    payload += "\"usuario\":\""     + user + "\",";
+    payload += "\"data\":\""        + data + "\",";
+    payload += "\"hora\":\""        + hora + "\"";
+    payload += "}";
+
+    bool ok = mqttClient.publish(MQTT_TOPIC_MOV, payload.c_str());
+    if (!ok) {
+      Serial.println("MQTT: falha ao publicar linha de historico.");
+    }
+    delay(10); // só pra não lotar o broker de uma vez
+  }
+
+  f.close();
+  Serial.println("Historico enviado.");
 }
 
 // Função que lista o arquivo de movimentações
@@ -687,27 +786,35 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  const char* cmd  = doc["cmd"];   // ex: "start_register"
-  const char* tipo = doc["tipo"];  // "parent" ou "employee"
+  const char* cmd  = doc["cmd"];   // ex: "start_register" ou "get_history"
+  const char* tipo = doc["tipo"];  // "parent" ou "employee" (p/ cadastro)
 
   if (!cmd) return;
 
-  // Exemplo de comando: { "cmd": "start_register", "tipo": "parent" }
+  // === NOVO: comando vindo do front para pedir o historico ===
+  if (strcmp(cmd, "get_history") == 0) {
+    Serial.println("Comando MQTT: get_history -> enviando arquivo de movimentacoes");
+    publishMovHistoryToMQTT();
+    return;
+  }
+
+  // === JÁ EXISTENTE: fluxo de cadastro ===
   if (strcmp(cmd, "start_register") == 0 && tipo) {
 
-  if (mqttClient.connected()) {
-    String payloadStatus = String("{\"context\":\"cadastro\",\"tipo\":\"") +
-                           tipo + "\",\"status\":\"waiting\"}";
-    mqttClient.publish(MQTT_TOPIC_STATUS, payloadStatus.c_str());
-  }
+    if (mqttClient.connected()) {
+      String payloadStatus = String("{\"context\":\"cadastro\",\"tipo\":\"") +
+                             tipo + "\",\"status\":\"waiting\"}";
+      mqttClient.publish(MQTT_TOPIC_STATUS, payloadStatus.c_str());
+    }
 
-  if (strcmp(tipo, "parent") == 0) {
-    registerCard(CARDS_FILE, "parent");
-  } else if (strcmp(tipo, "employee") == 0) {
-    registerCard(ADMINS_FILE, "employee");
-  }
+    if (strcmp(tipo, "parent") == 0) {
+      registerCard(CARDS_FILE, "parent");
+    } else if (strcmp(tipo, "employee") == 0) {
+      registerCard(ADMINS_FILE, "employee");
+    }
   }
 }
+
 
 // --------- Movimentação: arquivo + MQTT ----------
 
@@ -949,7 +1056,10 @@ void loop() {
   if (c == 'f' || c == 'F') countRegisteredAndShow(ADMINS_FILE);
   if (c == 't' || c == 'T') listarAtrasosDepoisDe815();
   if (c == 'p' || c == 'P') listarUsuariosDentroHoje();
-  if (c == 'm' || c == 'M') listMovimentacoes();
+  if (c == 'm' || c == 'M') {
+  listMovimentacoes();        // continua mostrando na serial
+  publishMovHistoryToMQTT();  // e agora também manda pro dashboard
+  }
   if (c == 'd' || c == 'D') {
     Serial.println("Digite o UID a deletar:");
     while (!Serial.available()) delay(10);
