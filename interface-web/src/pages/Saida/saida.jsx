@@ -1,5 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
+import mqtt from "mqtt";
 
 import {
   PageWrapper,
@@ -26,6 +27,10 @@ import {
   BackButton,
 } from "./saida.styles";
 
+const MQTT_URL = "ws://172.20.10.2:9001";
+const TOPIC_CMD = "portaria/comandos";
+const TOPIC_STATUS = "portaria/status";
+
 export default function Saida() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -35,6 +40,52 @@ export default function Saida() {
   // agora só 2 etapas: funcionário e responsável
   const [employeeStatus, setEmployeeStatus] = useState("waiting");
   const [parentStatus, setParentStatus] = useState("idle");
+  const [client, setClient] = useState(null);
+
+  useEffect(() => {
+    const c = mqtt.connect(MQTT_URL, {
+      clientId: "front-saida-" + Math.random().toString(16).slice(2),
+    });
+
+    setClient(c);
+
+    c.on("connect", () => {
+      console.log("MQTT conectado (saida)");
+      c.subscribe(TOPIC_STATUS);
+
+      const payload = JSON.stringify({
+        cmd: "start_saida",
+      });
+      c.publish(TOPIC_CMD, payload);
+      console.log("Comando start_saida enviado:", payload);
+    });
+
+    c.on("message", (topic, payload) => {
+      if (topic !== TOPIC_STATUS) return;
+
+      try {
+        const msg = JSON.parse(payload.toString());
+        console.log("STATUS MQTT SAIDA:", msg);
+
+        if (msg.context !== "saida") return;
+
+        if (msg.step === "employee" && msg.status) {
+          setEmployeeStatus(msg.status);
+        }
+
+        if (msg.step === "parent" && msg.status) {
+          setParentStatus(msg.status);
+        }
+      } catch (err) {
+        console.error("Erro ao parsear STATUS saida:", err);
+      }
+    });
+
+    return () => {
+      console.log("Encerrando conexão MQTT (saida)");
+      c.end();
+    };
+  }, []);
 
   const goHome = () => navigate("/");
   const goCadastro = () => navigate("/cadastro");
@@ -52,7 +103,7 @@ export default function Saida() {
     error: "Erro na leitura. Tente novamente.",
   };
 
-  // FUNCIONÁRIO
+  // BOTÕES DE SIMULAÇÃO (opcionais, só mexem no estado local)
   function okEmployee() {
     if (!canEmployee) return;
     setEmployeeStatus("success");
@@ -63,7 +114,6 @@ export default function Saida() {
     setEmployeeStatus("error");
   }
 
-  // PAI / RESPONSÁVEL
   function okParent() {
     if (!canParent) return;
     setParentStatus("success");
@@ -77,6 +127,7 @@ export default function Saida() {
     <PageWrapper>
       <Card>
         <BackButton onClick={goHome}>← home</BackButton>
+
         {/* Tabs topo */}
         <TabsBar>
           <TabsTrack>
