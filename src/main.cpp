@@ -65,8 +65,8 @@ String uidFuncionarioSaidaPendente;
 bool leituraHabilitada = false;
 
 // --------- MQTT CONFIG ---------
-const char* MQTT_BROKER       = "172.20.10.10";   // IP do PC com o broker
-const uint16_t MQTT_PORT      = 1884;
+const char* MQTT_BROKER       = "172.20.10.2";   // IP do PC com o broker
+const uint16_t MQTT_PORT      = 1883;
 const char* MQTT_CLIENT_ID    = "esp32-portaria-01";
 const char* MQTT_TOPIC_MOV    = "portaria/movimentacoes";  // eventos de entrada/saida
 const char* MQTT_TOPIC_CMD    = "portaria/comandos";       // comandos vindos do React
@@ -765,6 +765,30 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       registerCard(ADMINS_FILE, "employee");
     }
   }
+
+    // === NOVO: iniciar fluxo de ENTRADA via MQTT (USUARIO -> FUNCIONARIO) ===
+  if (strcmp(cmd, "start_entrada") == 0) {
+    // configura o modo e libera leitura
+    modoAtual              = MODO_ENTRADA;
+    aguardandoSegundoEntrada = false;
+    aguardandoSegundoSaida   = false;
+    leituraHabilitada        = true;
+
+    Serial.println("MQTT: fluxo de ENTRADA iniciado (USUARIO -> FUNCIONARIO).");
+
+    // avisa o front que está esperando o cartão do responsável (usuário)
+    if (mqttClient.connected()) {
+      String payload = "{";
+      payload += "\"context\":\"entrada\",";
+      payload += "\"step\":\"parent\",";    // etapa do responsável
+      payload += "\"status\":\"waiting\"";  // aguardando cartão
+      payload += "}";
+      mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+    }
+
+    return;
+  }
+
 }
 
 // Registrar movimentação
@@ -819,6 +843,8 @@ void registrarMovimentacao(const String &uidFuncionario,
 
 // --------- ENTRADA ----------
 // Primeiro: USUÁRIO, depois: FUNCIONÁRIO
+// --------- ENTRADA ----------
+// Primeiro: USUÁRIO, depois: FUNCIONÁRIO
 void processarEntradaCartao(const String &uidLido) {
   String uid = uidLido;
   uid.trim();
@@ -827,6 +853,7 @@ void processarEntradaCartao(const String &uidLido) {
   bool ehUsuario     = isRegistered(CARDS_FILE,  uid);
   bool ehFuncionario = isRegistered(ADMINS_FILE, uid);
 
+  // ==================== PRIMEIRO CARTÃO (USUÁRIO) ====================
   if (!aguardandoSegundoEntrada) {
     // PRIMEIRO CARTÃO: deve ser USUÁRIO
     if (!ehUsuario && !ehFuncionario) {
@@ -836,6 +863,17 @@ void processarEntradaCartao(const String &uidLido) {
       delay(2000);
       digitalWrite(LED_RED, LOW);
       leituraHabilitada = false;
+
+      // 🔴 NOVO: avisa o front que a etapa do responsável deu erro
+      if (mqttClient.connected()) {
+        String payload = "{";
+        payload += "\"context\":\"entrada\",";
+        payload += "\"step\":\"parent\",";
+        payload += "\"status\":\"error\"";
+        payload += "}";
+        mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+      }
+
       return;
     }
 
@@ -846,6 +884,17 @@ void processarEntradaCartao(const String &uidLido) {
       delay(2000);
       digitalWrite(LED_RED, LOW);
       leituraHabilitada = false;
+
+      // 🔴 NOVO
+      if (mqttClient.connected()) {
+        String payload = "{";
+        payload += "\"context\":\"entrada\",";
+        payload += "\"step\":\"parent\",";
+        payload += "\"status\":\"error\"";
+        payload += "}";
+        mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+      }
+
       return;
     }
 
@@ -856,9 +905,21 @@ void processarEntradaCartao(const String &uidLido) {
       delay(2000);
       digitalWrite(LED_RED, LOW);
       leituraHabilitada = false;
+
+      // 🔴 NOVO
+      if (mqttClient.connected()) {
+        String payload = "{";
+        payload += "\"context\":\"entrada\",";
+        payload += "\"step\":\"parent\",";
+        payload += "\"status\":\"error\"";
+        payload += "}";
+        mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+      }
+
       return;
     }
 
+    // aqui deu tudo certo para o usuário
     uidUsuarioEntradaPendente = uid;
     aguardandoSegundoEntrada  = true;
 
@@ -869,8 +930,31 @@ void processarEntradaCartao(const String &uidLido) {
     digitalWrite(LED_YELLOW, HIGH);
     delay(300);
     digitalWrite(LED_YELLOW, LOW);
+
+    // 🟢 NOVO: parent SUCCESS + employee WAITING
+    if (mqttClient.connected()) {
+      // etapa do responsável concluída
+      String payload1 = "{";
+      payload1 += "\"context\":\"entrada\",";
+      payload1 += "\"step\":\"parent\",";
+      payload1 += "\"status\":\"success\"";
+      payload1 += "}";
+      mqttClient.publish(MQTT_TOPIC_STATUS, payload1.c_str());
+
+      // agora aguardando o funcionário
+      String payload2 = "{";
+      payload2 += "\"context\":\"entrada\",";
+      payload2 += "\"step\":\"employee\",";
+      payload2 += "\"status\":\"waiting\"";
+      payload2 += "}";
+      mqttClient.publish(MQTT_TOPIC_STATUS, payload2.c_str());
+    }
+
     return;
-  } else {
+  }
+
+  // ==================== SEGUNDO CARTÃO (FUNCIONÁRIO) ====================
+  else {
     // SEGUNDO CARTÃO: deve ser FUNCIONARIO
     if (uid == uidUsuarioEntradaPendente) {
       Serial.println("Falha (ENTRADA): mesmo cartao nao pode ser USUARIO e FUNCIONARIO.");
@@ -880,6 +964,17 @@ void processarEntradaCartao(const String &uidLido) {
       digitalWrite(LED_RED, LOW);
       aguardandoSegundoEntrada = false;
       leituraHabilitada        = false;
+
+      // 🔴 NOVO: erro na etapa do funcionário
+      if (mqttClient.connected()) {
+        String payload = "{";
+        payload += "\"context\":\"entrada\",";
+        payload += "\"step\":\"employee\",";
+        payload += "\"status\":\"error\"";
+        payload += "}";
+        mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+      }
+
       return;
     }
 
@@ -891,6 +986,17 @@ void processarEntradaCartao(const String &uidLido) {
       digitalWrite(LED_RED, LOW);
       aguardandoSegundoEntrada = false;
       leituraHabilitada        = false;
+
+      // 🔴 NOVO
+      if (mqttClient.connected()) {
+        String payload = "{";
+        payload += "\"context\":\"entrada\",";
+        payload += "\"step\":\"employee\",";
+        payload += "\"status\":\"error\"";
+        payload += "}";
+        mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+      }
+
       return;
     }
 
@@ -902,6 +1008,17 @@ void processarEntradaCartao(const String &uidLido) {
       digitalWrite(LED_RED, LOW);
       aguardandoSegundoEntrada = false;
       leituraHabilitada        = false;
+
+      // 🔴 NOVO
+      if (mqttClient.connected()) {
+        String payload = "{";
+        payload += "\"context\":\"entrada\",";
+        payload += "\"step\":\"employee\",";
+        payload += "\"status\":\"error\"";
+        payload += "}";
+        mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+      }
+
       return;
     }
 
@@ -913,9 +1030,21 @@ void processarEntradaCartao(const String &uidLido) {
       digitalWrite(LED_RED, LOW);
       aguardandoSegundoEntrada = false;
       leituraHabilitada        = false;
+
+      // 🔴 NOVO
+      if (mqttClient.connected()) {
+        String payload = "{";
+        payload += "\"context\":\"entrada\",";
+        payload += "\"step\":\"employee\",";
+        payload += "\"status\":\"error\"";
+        payload += "}";
+        mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+      }
+
       return;
     }
 
+    // sucesso na combinação
     String uidFuncionario = uid;
     String uidUsuario     = uidUsuarioEntradaPendente;
 
@@ -924,6 +1053,16 @@ void processarEntradaCartao(const String &uidLido) {
 
     Serial.println("✅ Combinacao valida para ENTRADA (USUARIO + FUNCIONARIO).");
     registrarMovimentacao(uidFuncionario, uidUsuario, "entrada");
+
+    // 🟢 NOVO: funcionário OK
+    if (mqttClient.connected()) {
+      String payload = "{";
+      payload += "\"context\":\"entrada\",";
+      payload += "\"step\":\"employee\",";
+      payload += "\"status\":\"success\"";
+      payload += "}";
+      mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+    }
 
     digitalWrite(LED_GREEN, HIGH);
     digitalWrite(LED_RED, LOW);
@@ -935,10 +1074,11 @@ void processarEntradaCartao(const String &uidLido) {
       Serial.println("Semaforo semAcessoLiberado sinalizado e consumido (entrada).");
     }
 
-    // desabilita leituras até o próximo comando no terminal
+    // desabilita leituras até o próximo comando (ou próximo start_entrada)
     leituraHabilitada = false;
   }
 }
+
 
 // --------- SAÍDA ----------
 // Primeiro: FUNCIONARIO, depois: USUARIO

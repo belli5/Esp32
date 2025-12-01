@@ -1,5 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
+import mqtt from "mqtt";
 
 import {
   PageWrapper,
@@ -26,15 +27,63 @@ import {
   BackButton,
 } from "./entrada.styles";
 
+const MQTT_URL = "ws://172.20.10.2:9001";
+const TOPIC_CMD = "portaria/comandos";
+const TOPIC_STATUS = "portaria/status";
+
 export default function Entrada() {
   const navigate = useNavigate();
   const location = useLocation();
 
   const activeIndex = location.pathname === "/cadastro" ? 1 : 0;
 
-  // Agora só 2 etapas: responsável e funcionário
-  const [parentStatus, setParentStatus] = useState("waiting"); // começa aguardando responsável
+  // 2 etapas: responsável e funcionário
+  const [parentStatus, setParentStatus] = useState("waiting");
   const [employeeStatus, setEmployeeStatus] = useState("idle");
+  const [client, setClient] = useState(null);
+
+  useEffect(() => {
+    const c = mqtt.connect(MQTT_URL, {
+      clientId: "front-entrada-" + Math.random().toString(16).slice(2),
+    });
+
+    setClient(c);
+
+    c.on("connect", () => {
+      console.log("MQTT conectado (entrada)");
+      c.subscribe(TOPIC_STATUS);
+
+      const payload = JSON.stringify({
+        cmd: "start_entrada",
+      });
+      c.publish(TOPIC_CMD, payload);
+      console.log("Comando start_entrada enviado:", payload);
+    });
+
+    c.on("message", (topic, payload) => {
+      if (topic !== TOPIC_STATUS) return;
+      try {
+        const msg = JSON.parse(payload.toString());
+        console.log("STATUS MQTT ENTRADA:", msg);
+
+        if (msg.context !== "entrada") return;
+
+        if (msg.step === "parent" && msg.status) {
+          setParentStatus(msg.status);
+        }
+        if (msg.step === "employee" && msg.status) {
+          setEmployeeStatus(msg.status);
+        }
+      } catch (e) {
+        console.error("Erro ao parsear STATUS entrada:", e);
+      }
+    });
+
+    return () => {
+      console.log("Encerrando conexão MQTT (entrada)");
+      c.end();
+    };
+  }, []);
 
   const goHome = () => navigate("/");
   const goCadastro = () => navigate("/cadastro");
@@ -52,6 +101,7 @@ export default function Entrada() {
     error: "Erro na leitura. Tente novamente.",
   };
 
+  // botões de simulação – opcionais, só mexem no estado local
   function okParent() {
     if (!canParent) return;
     setParentStatus("success");
@@ -96,7 +146,8 @@ export default function Entrada() {
 
         <Title>Cartões de Entrada</Title>
         <Subtitle>
-          Leia o cartão do responsável e do funcionário para liberar a entrada na escola.
+          Leia o cartão do responsável e do funcionário para liberar a entrada
+          na escola.
         </Subtitle>
 
         <StepsGrid>
