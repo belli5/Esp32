@@ -29,8 +29,8 @@ const char* ADMINS_FILE        = "/funcionarios.txt";
 const char* MOVIMENTACOES_FILE = "/movimentacoes.txt";
 
 // Configuração de WiFi e de Fuso
-#define WIFI_SSID "iPhone de Gabriel Henriques"
-#define WIFI_PASS "bellibelli"
+#define WIFI_SSID "iPhone de Gabriel"
+#define WIFI_PASS "12345678"
 
 const char* NTP_SERVER      = "pool.ntp.org";
 const long  GMT_OFFSET_SEC  = -3 * 3600;
@@ -65,7 +65,7 @@ String uidFuncionarioSaidaPendente;
 bool leituraHabilitada = false;
 
 // --------- MQTT CONFIG ---------
-const char* MQTT_BROKER       = "172.20.10.2";   // IP do PC com o broker
+const char* MQTT_BROKER       = "172.20.10.4";   // IP do PC com o broker
 const uint16_t MQTT_PORT      = 1883;
 const char* MQTT_CLIENT_ID    = "esp32-portaria-01";
 const char* MQTT_TOPIC_MOV    = "portaria/movimentacoes";  // eventos de entrada/saida
@@ -159,7 +159,8 @@ size_t countRegisteredAndShow(const char* fileName) {
 // Lê linha "-FUNC- recebeu/liberou -USER- às -HH:MM:SS- do dia -DD/MM/AAAA-"
 bool parseMovLine(const String &line,
                   String &uidFunc, String &uidUser,
-                  String &hora, String &data)
+                  String &hora, String &data,
+                  String &acao)   // 👈 novo
 {
   String s = line;
   s.trim();
@@ -178,11 +179,14 @@ bool parseMovLine(const String &line,
   int idxTok  = s.indexOf(padRecebeu, secondDash);
   int lenTok  = padRecebeu.length();
 
-  if (idxTok < 0) {
+  if (idxTok >= 0) {
+    acao = "recebeu";                // 👈 achou "recebeu"
+  } else {
     idxTok = s.indexOf(padLiberou, secondDash);
     lenTok = padLiberou.length();
+    if (idxTok < 0) return false;
+    acao = "liberou";                // 👈 achou "liberou"
   }
-  if (idxTok < 0) return false;
 
   int uidUserStart = idxTok + lenTok;
   int uidUserEnd   = s.indexOf('-', uidUserStart);
@@ -231,8 +235,8 @@ void publishMovHistoryToMQTT() {
     line.trim();
     if (!line.length()) continue;
 
-    String func, user, hora, data;
-    if (!parseMovLine(line, func, user, hora, data)) {
+    String func, user, hora, data, acao;   // 👈 agora tem acao
+    if (!parseMovLine(line, func, user, hora, data, acao)) {
       Serial.println("Linha de movimentacao em formato inesperado, ignorando:");
       Serial.println(line);
       continue;
@@ -241,6 +245,7 @@ void publishMovHistoryToMQTT() {
     String payload = "{";
     payload += "\"funcionario\":\"" + func + "\",";
     payload += "\"usuario\":\""     + user + "\",";
+    payload += "\"acao\":\""        + acao + "\",";  // 👈 AQUI
     payload += "\"data\":\""        + data + "\",";
     payload += "\"hora\":\""        + hora + "\"";
     payload += "}";
@@ -550,8 +555,8 @@ size_t listarAtrasosDepoisDe815() {
     line.trim();
     if (!line.length()) continue;
 
-    String func, user, horaLinha, dataLinha;
-    if (!parseMovLine(line, func, user, horaLinha, dataLinha)) {
+    String func, user, horaLinha, dataLinha, acao;
+    if (!parseMovLine(line, func, user, horaLinha, dataLinha, acao)) {
       continue;
     }
 
@@ -636,8 +641,8 @@ size_t listarUsuariosDentroHoje() {
     line.trim();
     if (!line.length()) continue;
 
-    String func, user, horaLinha, dataLinha;
-    if (!parseMovLine(line, func, user, horaLinha, dataLinha)) {
+    String func, user, horaLinha, dataLinha, acao;
+    if (!parseMovLine(line, func, user, horaLinha, dataLinha, acao)) {
       continue;
     }
 
@@ -846,12 +851,13 @@ void registrarMovimentacao(const String &uidFuncionario,
   }
 
   if (mqttClient.connected()) {
-    String payload = "{";
-    payload += "\"funcionario\":\"" + uidFuncionario + "\",";
-    payload += "\"usuario\":\""     + uidUsuario     + "\",";
-    payload += "\"data\":\""        + dataStr        + "\",";
-    payload += "\"hora\":\""        + horaStr        + "\"";
-    payload += "}";
+  String payload = "{";
+  payload += "\"funcionario\":\"" + uidFuncionario + "\",";
+  payload += "\"usuario\":\""     + uidUsuario     + "\",";
+  payload += "\"acao\":\""        + tipo           + "\",";  // "entrada" ou "saída"
+  payload += "\"data\":\""        + dataStr        + "\",";
+  payload += "\"hora\":\""        + horaStr        + "\"";
+  payload += "}";
 
     bool ok = mqttClient.publish(MQTT_TOPIC_MOV, payload.c_str());
     if (ok) {

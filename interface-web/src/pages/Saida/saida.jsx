@@ -27,7 +27,7 @@ import {
   BackButton,
 } from "./saida.styles";
 
-const MQTT_URL = "ws://172.20.10.2:9001";
+const MQTT_URL = "ws://172.20.10.4:9001";
 const TOPIC_CMD = "portaria/comandos";
 const TOPIC_STATUS = "portaria/status";
 
@@ -174,14 +174,6 @@ export default function Saida() {
               <StepStatusText>{textByStatus[employeeStatus]}</StepStatusText>
             </StepStatusRow>
 
-            <StepButtonsRow>
-              <StepButton onClick={okEmployee}>
-                Simular leitura OK
-              </StepButton>
-              <StepButton variant="secondary" onClick={errorEmployee}>
-                Simular erro
-              </StepButton>
-            </StepButtonsRow>
           </StepCard>
 
           {/* Etapa 2 — Pai / Responsável */}
@@ -201,18 +193,6 @@ export default function Saida() {
               </StepStatusText>
             </StepStatusRow>
 
-            <StepButtonsRow>
-              <StepButton disabled={!canParent} onClick={okParent}>
-                Simular leitura OK
-              </StepButton>
-              <StepButton
-                disabled={!canParent}
-                variant="secondary"
-                onClick={errorParent}
-              >
-                Simular erro
-              </StepButton>
-            </StepButtonsRow>
           </StepCard>
         </StepsGrid>
 

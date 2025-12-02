@@ -96,7 +96,7 @@ export const ChartsGrid = styled.div`
 
 export const ChartCard = styled.div`
   border-radius: 18px;
-  padding: 16px 16px 18px;
+  padding: 5px 10px 5px;
   background: #f9fafb;
   border: 1px solid #e5e7eb;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
@@ -115,7 +115,7 @@ export const ChartSubtitle = styled.p`
 `;
 
 export const ChartArea = styled.div`
-  padding-top: 4px;
+  padding-top: 50px;
 `;
 
 export const BarRow = styled.div`
@@ -132,7 +132,38 @@ export const Bar = styled.div`
   background: linear-gradient(180deg, #2563eb, #1d4ed8);
   height: ${({ value }) => `${Math.max(10, Math.min(value, 100))}%`};
   box-shadow: 0 4px 10px rgba(37, 99, 235, 0.35);
+  position: relative;
+  cursor: pointer;
+  transition: transform 0.18s ease;
+
+  &:hover {
+    transform: translateY(-4px);
+  }
+
+  /* 🔵 Tooltip com o número real (usa data-count do JSX) */
+  &::after {
+    content: attr(data-count);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: #111827;
+    color: #f9fafb;
+    font-size: 11px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease, bottom 0.15s ease;
+  }
+
+  &:hover::after {
+    opacity: 1;
+    bottom: calc(100% + 6px);
+  }
 `;
+
 
 export const BarLabelRow = styled.div`
   display: flex;
@@ -199,4 +230,56 @@ export const LegendDot = styled.span`
   border-radius: 999px;
   background: ${({ type }) =>
     type === "presente" ? "#22c55e" : "#ef4444"};
+`;
+
+export const LogList = styled.div`
+  max-height: 190px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+`;
+
+export const LogRow = styled.div`
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+`;
+
+export const LogMain = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #111827;
+`;
+
+export const LogStrong = styled.span`
+  font-weight: 600;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  background: #eef2ff;
+  padding: 2px 6px;
+  border-radius: 6px;
+`;
+
+export const LogMeta = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #6b7280;
+  font-size: 11px;
+`;
+
+export const EmptyLog = styled.div`
+  font-size: 12px;
+  color: #9ca3af;
+  text-align: center;
+  padding: 16px 0;
 `;

@@ -27,9 +27,15 @@ import {
   LegendRow,
   LegendItem,
   LegendDot,
+  LogList,
+  LogRow,
+  LogMain,
+  LogMeta,
+  LogStrong,
+  EmptyLog,
 } from "./dashboard.styles";
 
-const MQTT_URL = "ws://172.20.10.2:9001"; 
+const MQTT_URL = "ws://172.20.10.4:9001";
 
 const diasOrdem = ["Seg", "Ter", "Qua", "Qui", "Sex"];
 const mapDowToLabel = {
@@ -67,10 +73,8 @@ export default function Dashboard() {
       console.log("MQTT conectado no FRONT!");
       client.subscribe("portaria/movimentacoes");
 
-      // 👇 assim que conectar, pede o historico para a ESP32
       const cmd = {
         cmd: "get_history",
-        // pode ter outros campos no futuro se quiser filtrar
       };
       client.publish("portaria/comandos", JSON.stringify(cmd));
     });
@@ -90,13 +94,24 @@ export default function Dashboard() {
     return () => client.end(true);
   }, []);
 
-
   // 📊 Transformar movimentações em dados pros gráficos
-  const { presencasSemana, semanaResumo, entradasVsSaidas } = useMemo(() => {
+  const {
+    presencasSemana,
+    semanaResumo,
+    entradasVsSaidas,
+    presencasAbsolutas,
+  } = useMemo(() => {
+    const now = new Date();
+    const mesAtual = now.getMonth();
+    const anoAtual = now.getFullYear();
+
     const contDiaSem = { Seg: 0, Ter: 0, Qua: 0, Qui: 0, Sex: 0 };
 
     movs.forEach(({ data }) => {
       const d = parseDateBR(data);
+
+      if (d.getMonth() !== mesAtual || d.getFullYear() !== anoAtual) return;
+
       const label = mapDowToLabel[d.getDay()];
       if (label) contDiaSem[label] += 1;
     });
@@ -109,14 +124,12 @@ export default function Dashboard() {
     const agora = new Date();
     const hojeStr = agora.toLocaleDateString("pt-BR");
 
-    // mesma lógica do "p" do seu backend
     const contHoje = {};
     movs.forEach((m) => {
       if (m.data === hojeStr) {
         contHoje[m.usuario] = (contHoje[m.usuario] || 0) + 1;
       }
     });
-
     const dentroHoje = Object.values(contHoje).filter((c) => c % 2 === 1).length;
 
     return {
@@ -129,7 +142,13 @@ export default function Dashboard() {
         { label: "Entradas", value: movs.length },
         { label: "Saídas", value: Math.max(movs.length - dentroHoje, 0) },
       ],
+      presencasAbsolutas: contDiaSem,
     };
+  }, [movs]);
+
+  // últimos 10 registros (mais recentes em cima)
+  const movsRecentes = useMemo(() => {
+    return [...movs].slice(-10).reverse();
   }, [movs]);
 
   return (
@@ -161,9 +180,19 @@ export default function Dashboard() {
 
             <ChartArea>
               <BarRow>
-                {presencasSemana.map((v, i) => (
-                  <Bar key={i} value={v} />
-                ))}
+                {presencasSemana.map((v, i) => {
+                  const dia = diasOrdem[i];
+                  const valorReal = presencasAbsolutas[dia] || 0;
+
+                  return (
+                    <Bar
+                      key={dia}
+                      value={v}
+                      data-count={valorReal}
+                      title={`${dia}: ${valorReal} movimentações`}
+                    />
+                  );
+                })}
               </BarRow>
 
               <BarLabelRow>
@@ -192,23 +221,33 @@ export default function Dashboard() {
             </ChartArea>
           </ChartCard>
 
-          {/* Gráfico 3 ainda mockado */}
+          {/* Log de movimentações */}
           <ChartCard>
-            <ChartTitle>Quem trouxe/buscou</ChartTitle>
-            <ChartSubtitle>Mock — vamos evoluir depois</ChartSubtitle>
+            <ChartTitle>Log de movimentações</ChartTitle>
+            <ChartSubtitle>Quem recebeu/liberou e quando</ChartSubtitle>
 
             <ChartArea>
-              <BarRow>
-                <Bar value={40} />
-                <Bar value={20} />
-                <Bar value={10} />
-              </BarRow>
+              <LogList>
+                {movsRecentes.length === 0 ? (
+                  <EmptyLog>Nenhuma movimentação recebida ainda.</EmptyLog>
+                ) : (
+                  movsRecentes.map((m, idx) => (
+                    <LogRow key={idx}>
+                      <LogMain>
+                        <LogStrong>{m.funcionario}</LogStrong>
+                        <span> → </span>
+                        <LogStrong>{m.usuario}</LogStrong>
+                      </LogMain>
 
-              <BarLabelRow>
-                <BarLabel>Pais</BarLabel>
-                <BarLabel>Avós</BarLabel>
-                <BarLabel>Outros</BarLabel>
-              </BarLabelRow>
+                      <LogMeta>
+                        <span>{m.data}</span>
+                        <span> • </span>
+                        <span>{m.hora}</span>
+                      </LogMeta>
+                    </LogRow>
+                  ))
+                )}
+              </LogList>
             </ChartArea>
           </ChartCard>
         </ChartsGrid>

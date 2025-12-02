@@ -27,7 +27,7 @@ import {
   BackButton,
 } from "./entrada.styles";
 
-const MQTT_URL = "ws://172.20.10.2:9001";
+const MQTT_URL = "ws://172.20.10.4:9001";
 const TOPIC_CMD = "portaria/comandos";
 const TOPIC_STATUS = "portaria/status";
 
@@ -163,13 +163,6 @@ export default function Entrada() {
               <LedDot status={parentStatus} />
               <StepStatusText>{textByStatus[parentStatus]}</StepStatusText>
             </StepStatusRow>
-
-            <StepButtonsRow>
-              <StepButton onClick={okParent}>Simular leitura OK</StepButton>
-              <StepButton variant="secondary" onClick={errorParent}>
-                Simular erro
-              </StepButton>
-            </StepButtonsRow>
           </StepCard>
 
           {/* Etapa 2 – Funcionário */}
@@ -189,18 +182,7 @@ export default function Entrada() {
               </StepStatusText>
             </StepStatusRow>
 
-            <StepButtonsRow>
-              <StepButton disabled={!canEmployee} onClick={okEmployee}>
-                Simular leitura OK
-              </StepButton>
-              <StepButton
-                disabled={!canEmployee}
-                variant="secondary"
-                onClick={errorEmployee}
-              >
-                Simular erro
-              </StepButton>
-            </StepButtonsRow>
+            
           </StepCard>
         </StepsGrid>
 

@@ -23,7 +23,7 @@ import {
   SimButton,
 } from "./cadastro.styles";
 
-const MQTT_URL = "ws://172.20.10.2:9001"; // porta de WebSocket do broker
+const MQTT_URL = "ws://172.20.10.4:9001"; // porta de WebSocket do broker
 const TOPIC_CMD = "portaria/comandos";
 const TOPIC_STATUS = "portaria/status";
 
@@ -188,18 +188,6 @@ export default function Cadastrar() {
             <LedText>{statusTextByStatus[status]}</LedText>
           </LedRow>
 
-          {/* Controles simples para simular leitura */}
-          <SimulateRow>
-            <SimButton onClick={() => setStatus("success")}>
-              Simular leitura OK
-            </SimButton>
-            <SimButton onClick={() => setStatus("error")}>
-              Simular erro
-            </SimButton>
-            <SimButton onClick={() => setStatus("waiting")}>
-              Voltar a aguardar
-            </SimButton>
-          </SimulateRow>
         </LedArea>
       </Card>
     </PageWrapper>
