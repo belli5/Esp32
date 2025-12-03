@@ -54,6 +54,7 @@ function parseDateBR(dateStr) {
 export default function Dashboard() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [insideList, setInsideList] = useState([]);
 
   let activeIndex = 0;
   if (location.pathname === "/cadastro") activeIndex = 1;
@@ -67,84 +68,83 @@ export default function Dashboard() {
   const [movs, setMovs] = useState([]);
 
   useEffect(() => {
-    const client = mqtt.connect(MQTT_URL);
+  const client = mqtt.connect(MQTT_URL);
 
-    client.on("connect", () => {
-      console.log("MQTT conectado no FRONT!");
-      client.subscribe("portaria/movimentacoes");
+  client.on("connect", () => {
+    console.log("MQTT conectado no FRONT!");
+    client.subscribe("portaria/movimentacoes");
+    client.subscribe("portaria/dentro");   // 👈 NOVO
 
-      const cmd = {
-        cmd: "get_history",
-      };
-      client.publish("portaria/comandos", JSON.stringify(cmd));
-    });
+    // pedir histórico de movimentações
+    client.publish(
+      "portaria/comandos",
+      JSON.stringify({ cmd: "get_history" })
+    );
 
-    client.on("message", (topic, msg) => {
-      if (topic !== "portaria/movimentacoes") return;
+    // pedir lista de quem está dentro hoje (equivalente ao 'p')
+    client.publish(
+      "portaria/comandos",
+      JSON.stringify({ cmd: "get_inside_today" })
+    );
+  });
 
-      try {
-        const data = JSON.parse(msg.toString());
-        console.log("Mov recebida:", data);
+  client.on("message", (topic, msg) => {
+    try {
+      const data = JSON.parse(msg.toString());
+      console.log("MQTT msg:", topic, data);
+
+      if (topic === "portaria/movimentacoes") {
         setMovs((prev) => [...prev, data]);
-      } catch (e) {
-        console.error("MQTT JSON inválido:", e);
+      } else if (topic === "portaria/dentro") {
+        // payload: { context: "inside", total: X, itens: [ { uid, count }, ... ] }
+        setInsideList(data.itens || []);
       }
-    });
+    } catch (e) {
+      console.error("MQTT JSON inválido:", e);
+    }
+  });
 
-    return () => client.end(true);
-  }, []);
+  return () => client.end(true);
+}, []);
+
 
   // 📊 Transformar movimentações em dados pros gráficos
   const {
-    presencasSemana,
-    semanaResumo,
-    entradasVsSaidas,
-    presencasAbsolutas,
-  } = useMemo(() => {
-    const now = new Date();
-    const mesAtual = now.getMonth();
-    const anoAtual = now.getFullYear();
+  presencasSemana,
+  semanaResumo,
+  presencasAbsolutas,
+} = useMemo(() => {
+  const now = new Date();
+  const mesAtual = now.getMonth();
+  const anoAtual = now.getFullYear();
 
-    const contDiaSem = { Seg: 0, Ter: 0, Qua: 0, Qui: 0, Sex: 0 };
+  const contDiaSem = { Seg: 0, Ter: 0, Qua: 0, Qui: 0, Sex: 0 };
 
-    movs.forEach(({ data }) => {
-      const d = parseDateBR(data);
+  // --- presença no mês ---
+  movs.forEach(({ data }) => {
+    const d = parseDateBR(data);
 
-      if (d.getMonth() !== mesAtual || d.getFullYear() !== anoAtual) return;
+    if (d.getMonth() !== mesAtual || d.getFullYear() !== anoAtual) return;
 
-      const label = mapDowToLabel[d.getDay()];
-      if (label) contDiaSem[label] += 1;
-    });
+    const label = mapDowToLabel[d.getDay()];
+    if (label) contDiaSem[label] += 1;
+  });
 
-    const maxDia = Math.max(1, ...diasOrdem.map((d) => contDiaSem[d]));
-    const pres = diasOrdem.map((dia) =>
-      Math.round((contDiaSem[dia] / maxDia) * 100)
-    );
+  const maxDia = Math.max(1, ...diasOrdem.map((d) => contDiaSem[d]));
+  const pres = diasOrdem.map((dia) =>
+    Math.round((contDiaSem[dia] / maxDia) * 100)
+  );
 
-    const agora = new Date();
-    const hojeStr = agora.toLocaleDateString("pt-BR");
+  return {
+    presencasSemana: pres,
+    semanaResumo: diasOrdem.map((dia) => ({
+      dia,
+      presente: contDiaSem[dia] > 0,
+    })),
+    presencasAbsolutas: contDiaSem,
+  };
+}, [movs]);
 
-    const contHoje = {};
-    movs.forEach((m) => {
-      if (m.data === hojeStr) {
-        contHoje[m.usuario] = (contHoje[m.usuario] || 0) + 1;
-      }
-    });
-    const dentroHoje = Object.values(contHoje).filter((c) => c % 2 === 1).length;
-
-    return {
-      presencasSemana: pres,
-      semanaResumo: diasOrdem.map((dia) => ({
-        dia,
-        presente: contDiaSem[dia] > 0,
-      })),
-      entradasVsSaidas: [
-        { label: "Entradas", value: movs.length },
-        { label: "Saídas", value: Math.max(movs.length - dentroHoje, 0) },
-      ],
-      presencasAbsolutas: contDiaSem,
-    };
-  }, [movs]);
 
   // últimos 10 registros (mais recentes em cima)
   const movsRecentes = useMemo(() => {
@@ -187,9 +187,13 @@ export default function Dashboard() {
                   return (
                     <Bar
                       key={dia}
-                      value={v}
-                      data-count={valorReal}
-                      title={`${dia}: ${valorReal} movimentações`}
+                      value={v} // percent
+                      data-count={valorReal > 0 ? valorReal : ""}
+                      title={
+                        valorReal > 0
+                          ? `${dia}: ${valorReal} movimentações`
+                          : ""
+                      }
                     />
                   );
                 })}
@@ -203,21 +207,33 @@ export default function Dashboard() {
             </ChartArea>
           </ChartCard>
 
-          {/* Gráfico 2 */}
+          {/* Log de quem está dentro hoje */}
           <ChartCard>
-            <ChartTitle>Entradas x Saídas</ChartTitle>
-            <ChartArea>
-              <BarRow>
-                {entradasVsSaidas.map((item) => (
-                  <Bar key={item.label} value={item.value * 2} />
-                ))}
-              </BarRow>
+            <ChartTitle>Quem está dentro da escola</ChartTitle>
+            <ChartSubtitle>Baseado nas movimentações de hoje</ChartSubtitle>
 
-              <BarLabelRow>
-                {entradasVsSaidas.map((item) => (
-                  <BarLabel key={item.label}>{item.label}</BarLabel>
-                ))}
-              </BarLabelRow>
+            <ChartArea>
+              <LogList>
+                {insideList.length === 0 ? (
+                  <EmptyLog>Ninguém dentro no momento.</EmptyLog>
+                ) : (
+                  insideList.map((item) => (
+                    <LogRow key={item.uid}>
+                      <LogMain>
+                        <LogStrong>{item.uid}</LogStrong>
+                      </LogMain>
+
+                      <LogMeta>
+                        {item.count > 1 ? (
+                          <span>{item.count} entradas não fechadas</span>
+                        ) : (
+                          <span>1 entrada não fechada</span>
+                        )}
+                      </LogMeta>
+                    </LogRow>
+                  ))
+                )}
+              </LogList>
             </ChartArea>
           </ChartCard>
 

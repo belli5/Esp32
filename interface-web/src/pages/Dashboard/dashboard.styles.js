@@ -104,18 +104,18 @@ export const ChartCard = styled.div`
 
 export const ChartTitle = styled.h2`
   font-size: 16px;
-  margin: 0 0 4px;
+  margin: 10px;
   color: #111827;
 `;
 
 export const ChartSubtitle = styled.p`
   font-size: 12px;
-  margin: 0 0 10px;
+  margin: 16px 16px 16px;
   color: #6b7280;
 `;
 
 export const ChartArea = styled.div`
-  padding-top: 50px;
+  padding-top: 10px;
 `;
 
 export const BarRow = styled.div`
@@ -129,18 +129,23 @@ export const BarRow = styled.div`
 export const Bar = styled.div`
   flex: 1;
   border-radius: 999px 999px 4px 4px;
-  background: linear-gradient(180deg, #2563eb, #1d4ed8);
-  height: ${({ value }) => `${Math.max(10, Math.min(value, 100))}%`};
-  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.35);
+  /* só pinta quando value > 0 */
+  background: ${({ value }) =>
+    value <= 0 ? "transparent" : "linear-gradient(180deg, #2563eb, #1d4ed8)"};
+  /* se value <= 0, altura zero */
+  height: ${({ value }) =>
+    value <= 0 ? "0%" : `${Math.min(value, 100)}%`};
+  box-shadow: ${({ value }) =>
+    value <= 0 ? "none" : "0 4px 10px rgba(37, 99, 235, 0.35)"};
   position: relative;
-  cursor: pointer;
+  cursor: ${({ value }) => (value <= 0 ? "default" : "pointer")};
   transition: transform 0.18s ease;
 
   &:hover {
-    transform: translateY(-4px);
+    transform: ${({ value }) => (value <= 0 ? "none" : "translateY(-4px)")};
   }
 
-  /* 🔵 Tooltip com o número real (usa data-count do JSX) */
+  /* Tooltip com o número real (usa data-count do JSX) */
   &::after {
     content: attr(data-count);
     position: absolute;
@@ -163,6 +168,7 @@ export const Bar = styled.div`
     bottom: calc(100% + 6px);
   }
 `;
+
 
 
 export const BarLabelRow = styled.div`

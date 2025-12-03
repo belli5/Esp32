@@ -71,6 +71,7 @@ const char* MQTT_CLIENT_ID    = "esp32-portaria-01";
 const char* MQTT_TOPIC_MOV    = "portaria/movimentacoes";  // eventos de entrada/saida
 const char* MQTT_TOPIC_CMD    = "portaria/comandos";       // comandos vindos do React
 const char* MQTT_TOPIC_STATUS = "portaria/status";         // msgs de status/resposta
+const char* MQTT_TOPIC_INSIDE = "portaria/dentro";
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
@@ -731,6 +732,124 @@ size_t listarUsuariosDentroHoje() {
   return totalPendencias;
 }
 
+void publishUsuariosDentroHojeToMQTT() {
+  if (!mqttClient.connected()) {
+    Serial.println("MQTT: nao conectado, nao envia lista de dentro.");
+    return;
+  }
+
+  String dataHoje, horaAgora;
+  if (!obterDataHoraAtual(dataHoje, horaAgora)) {
+    Serial.println("MQTT: nao conseguiu obter data/hora pra inside.");
+    return;
+  }
+
+  File f = SPIFFS.open(MOVIMENTACOES_FILE, FILE_READ);
+  if (!f) {
+    Serial.println("MQTT: sem MOVIMENTACOES_FILE, envia lista vazia.");
+    String payload = "{\"context\":\"inside\",\"total\":0,\"itens\":[]}";
+    mqttClient.publish(MQTT_TOPIC_INSIDE, payload.c_str());
+    return;
+  }
+
+  const int MAX_UIDS_DIA = 128;
+  String uidsDia[MAX_UIDS_DIA];
+  int contagens[MAX_UIDS_DIA];
+  int numUidsDia = 0;
+
+  for (int i = 0; i < MAX_UIDS_DIA; i++) {
+    contagens[i] = 0;
+  }
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+
+    String func, user, horaLinha, dataLinha, acao;
+    if (!parseMovLine(line, func, user, horaLinha, dataLinha, acao)) {
+      continue;
+    }
+
+    if (dataLinha != dataHoje) continue;
+
+    String uidUsuario = user;
+    uidUsuario.trim();
+    uidUsuario.toLowerCase();
+
+    if (!isRegistered(CARDS_FILE, uidUsuario)) {
+      continue;
+    }
+
+    bool isEntrada = line.indexOf(" recebeu -") >= 0;
+    bool isSaida   = line.indexOf(" liberou -") >= 0;
+
+    if (!isEntrada && !isSaida) continue;
+
+    int idx = -1;
+    for (int i = 0; i < numUidsDia; i++) {
+      if (uidsDia[i] == uidUsuario) {
+        idx = i;
+        break;
+      }
+    }
+
+    if (idx == -1) {
+      if (numUidsDia < MAX_UIDS_DIA) {
+        uidsDia[numUidsDia]   = uidUsuario;
+        contagens[numUidsDia] = 0;
+        idx = numUidsDia;
+        numUidsDia++;
+      } else {
+        continue;
+      }
+    }
+
+    if (isEntrada) {
+      contagens[idx]++;
+    } else if (isSaida) {
+      if (contagens[idx] > 0) {
+        contagens[idx]--;
+      }
+    }
+  }
+
+  f.close();
+
+  size_t totalPendencias = 0;
+  for (int i = 0; i < numUidsDia; i++) {
+    if (contagens[i] > 0) {
+      totalPendencias += contagens[i];
+    }
+  }
+
+  // Monta JSON: { "context":"inside", "total":X, "itens":[ { "uid":"...", "count":N }, ... ] }
+  String payload = "{";
+  payload += "\"context\":\"inside\",";
+  payload += "\"total\":" + String(totalPendencias) + ",";
+  payload += "\"itens\":[";
+  bool first = true;
+
+  for (int i = 0; i < numUidsDia; i++) {
+    if (contagens[i] <= 0) continue;
+    if (!first) payload += ",";
+    first = false;
+
+    payload += "{";
+    payload += "\"uid\":\""   + uidsDia[i] + "\",";
+    payload += "\"count\":"   + String(contagens[i]);
+    payload += "}";
+  }
+
+  payload += "]}";
+
+  Serial.print("MQTT inside -> ");
+  Serial.println(payload);
+
+  mqttClient.publish(MQTT_TOPIC_INSIDE, payload.c_str());
+}
+
+
 void reconnectMQTT() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("MQTT: sem WiFi, nao conecta no broker.");
@@ -788,6 +907,13 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     publishMovHistoryToMQTT();
     return;
   }
+
+    if (strcmp(cmd, "get_inside_today") == 0) {
+    Serial.println("Comando MQTT: get_inside_today -> enviando lista de usuarios dentro hoje");
+    publishUsuariosDentroHojeToMQTT();
+    return;
+  }
+
 
   if (strcmp(cmd, "start_register") == 0 && tipo) {
 
@@ -1469,7 +1595,13 @@ void loop() {
     if (c == 'u' || c == 'U') countRegisteredAndShow(CARDS_FILE);
     if (c == 'f' || c == 'F') countRegisteredAndShow(ADMINS_FILE);
     if (c == 't' || c == 'T') listarAtrasosDepoisDe815();
-    if (c == 'p' || c == 'P') listarUsuariosDentroHoje();
+        if (c == 'p' || c == 'P') {
+      listarUsuariosDentroHoje();  // continua aparecendo na Serial
+      if (mqttClient.connected()) {
+        publishUsuariosDentroHojeToMQTT();  // e manda pro front também
+      }
+    }
+
 
     if (c == 'm' || c == 'M') {
       listMovimentacoes();
