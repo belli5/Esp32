@@ -831,6 +831,239 @@ void publishUsuariosDentroHojeToMQTT() {
   mqttClient.publish(MQTT_TOPIC_INSIDE, payload.c_str());
 }
 
+// =========== Helper para pegar dia da semana a partir de "dd/mm/aaaa" ===========
+// Retorna 0=Domingo, 1=Segunda, ..., 6=Sabado. Retorna -1 se der erro.
+int diaSemanaFromDataStr(const String &dataStr) {
+  if (dataStr.length() < 8) return -1;
+
+  int dia = dataStr.substring(0, 2).toInt();
+  int mes = dataStr.substring(3, 5).toInt();
+  int ano = dataStr.substring(6).toInt();
+
+  if (dia <= 0 || mes <= 0 || ano <= 0) return -1;
+
+  struct tm t = {};
+  t.tm_mday = dia;
+  t.tm_mon  = mes - 1;       // 0-11
+  t.tm_year = ano - 1900;    // anos desde 1900
+  t.tm_hour = 12;            // meio-dia pra evitar problemas com fuso
+
+  time_t secs = mktime(&t);
+  if (secs == (time_t)-1) return -1;
+
+  struct tm *res = localtime(&secs);
+  if (!res) return -1;
+
+  return res->tm_wday;       // 0=Dom, 1=Seg, ... 6=Sab
+}
+
+// =========== Verifica se a data está na semana atual (SEG–SEX) ===========
+bool isDataNaSemanaAtual(const String &dataStr) {
+  if (dataStr.length() < 8) return false;
+
+  int dia = dataStr.substring(0, 2).toInt();
+  int mes = dataStr.substring(3, 5).toInt();
+  int ano = dataStr.substring(6).toInt();
+  if (dia <= 0 || mes <= 0 || ano <= 0) return false;
+
+  // Pega "hoje" via getLocalTime
+  struct tm hoje;
+  if (!getLocalTime(&hoje)) {
+    Serial.println("isDataNaSemanaAtual: falha ao obter hora atual.");
+    return false;
+  }
+
+  // Normaliza hoje pra só data
+  hoje.tm_hour = 12;  // meio-dia
+  hoje.tm_min  = 0;
+  hoje.tm_sec  = 0;
+  time_t tHoje = mktime(&hoje);
+  if (tHoje == (time_t)-1) return false;
+
+  // wday: 0=Dom, 1=Seg, ..., 6=Sab
+  int wday = hoje.tm_wday;
+
+  // Diff até segunda-feira da semana atual
+  // (0..6) -> (6,0,1,2,3,4,5) para Dom..Sab
+  int diffToMonday = (wday + 6) % 7;
+  time_t tSegunda = tHoje - diffToMonday * 24 * 3600;
+  time_t tSexta   = tSegunda + 4 * 24 * 3600;
+
+  // Monta struct tm da data do log
+  struct tm dt = {};
+  dt.tm_mday = dia;
+  dt.tm_mon  = mes - 1;
+  dt.tm_year = ano - 1900;
+  dt.tm_hour = 12;
+  dt.tm_min  = 0;
+  dt.tm_sec  = 0;
+
+  time_t tData = mktime(&dt);
+  if (tData == (time_t)-1) return false;
+
+  return (tData >= tSegunda && tData <= tSexta);
+}
+
+// =========== CORE: calcula em quais dias da semana o UID apareceu (somente semana atual) ===========
+size_t computeDiasSemanaPorUid(const String &uidRaw, bool diasSemana[7], String &uidNormalizado) {
+  uidNormalizado = uidRaw;
+  uidNormalizado.trim();
+  uidNormalizado.toLowerCase();
+
+  for (int i = 0; i < 7; i++) {
+    diasSemana[i] = false;
+  }
+
+  if (!uidNormalizado.length()) {
+    return 0;
+  }
+
+  File f = SPIFFS.open(MOVIMENTACOES_FILE, FILE_READ);
+  if (!f) {
+    Serial.println("computeDiasSemanaPorUid: nenhum arquivo de movimentacoes.");
+    return 0;
+  }
+
+  size_t totalDias = 0;
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+
+    String func, user, horaLinha, dataLinha, acao;
+    if (!parseMovLine(line, func, user, horaLinha, dataLinha, acao)) {
+      continue;
+    }
+
+    // Filtro: só considera datas da semana atual (SEG–SEX)
+    if (!isDataNaSemanaAtual(dataLinha)) {
+      continue;
+    }
+
+    func.trim(); func.toLowerCase();
+    user.trim(); user.toLowerCase();
+
+    // Considera quando o UID aparece como funcionário OU usuário:
+    if (func != uidNormalizado && user != uidNormalizado) {
+      continue;
+    }
+    // Se quisesse só quando ele é usuário:
+    // if (user != uidNormalizado) continue;
+
+    int w = diaSemanaFromDataStr(dataLinha);
+    if (w < 0 || w > 6) {
+      continue;
+    }
+
+    if (!diasSemana[w]) {
+      diasSemana[w] = true;
+      totalDias++;
+    }
+  }
+
+  f.close();
+  return totalDias;
+}
+
+// =========== SERIAL: pergunta o UID e mostra os dias na Serial ===========
+void consultarDiasSemanaPorUidSerial() {
+  Serial.println("Digite o UID a consultar (e pressione ENTER):");
+
+  // Espera o usuário digitar o UID
+  while (!Serial.available()) {
+    delay(10);
+  }
+
+  String uidBusca = Serial.readStringUntil('\n');
+  uidBusca.trim();
+  uidBusca.toLowerCase();
+
+  bool diasSemana[7];
+  String uidNorm;
+  size_t totalDias = computeDiasSemanaPorUid(uidBusca, diasSemana, uidNorm);
+
+  if (!uidNorm.length()) {
+    Serial.println("UID vazio. Consulta cancelada.");
+    return;
+  }
+
+  if (totalDias == 0) {
+    Serial.print("UID ");
+    Serial.print(uidNorm);
+    Serial.println(" nao possui movimentacoes registradas nesta semana (SEG–SEX).");
+    return;
+  }
+
+  static const char* nomesDias[7] = {
+    "Domingo",
+    "Segunda-feira",
+    "Terca-feira",
+    "Quarta-feira",
+    "Quinta-feira",
+    "Sexta-feira",
+    "Sabado"
+  };
+
+  Serial.print("UID ");
+  Serial.print(uidNorm);
+  Serial.println(" apareceu nesta semana (SEG–SEX) nos seguintes dias da semana:");
+
+  for (int i = 0; i < 7; i++) {
+    if (diasSemana[i]) {
+      Serial.println(nomesDias[i]);
+    }
+  }
+}
+
+// =========== MQTT: publica JSON com os dias em que o UID apareceu na semana ===========
+void publishDiasSemanaPorUidToMQTT(const String &uidRaw) {
+  if (!mqttClient.connected()) {
+    Serial.println("MQTT: nao conectado, nao envia uid_week_days.");
+    return;
+  }
+
+  bool diasSemana[7];
+  String uidNorm;
+  size_t totalDias = computeDiasSemanaPorUid(uidRaw, diasSemana, uidNorm);
+
+  static const char* nomesDias[7] = {
+    "Domingo",
+    "Segunda-feira",
+    "Terca-feira",
+    "Quarta-feira",
+    "Quinta-feira",
+    "Sexta-feira",
+    "Sabado"
+  };
+
+  String payload = "{";
+  payload += "\"context\":\"uid_week_days\",";
+  payload += "\"uid\":\"" + uidNorm + "\",";
+  payload += "\"totalDias\":" + String(totalDias) + ",";
+  payload += "\"dias\":[";
+  bool first = true;
+
+  if (totalDias > 0) {
+    for (int i = 0; i < 7; i++) {
+      if (!diasSemana[i]) continue;
+      if (!first) payload += ",";
+      first = false;
+      payload += "\"";
+      payload += nomesDias[i];
+      payload += "\"";
+    }
+  }
+  payload += "]}";
+
+  Serial.print("MQTT uid_week_days -> ");
+  Serial.println(payload);
+
+  mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
+}
+
+// ======================= MQTT / fluxo restante =======================
+
 void reconnectMQTT() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("MQTT: sem WiFi, nao conecta no broker.");
@@ -892,6 +1125,19 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (strcmp(cmd, "get_inside_today") == 0) {
     Serial.println("Comando MQTT: get_inside_today -> enviando lista de usuarios dentro hoje");
     publishUsuariosDentroHojeToMQTT();
+    return;
+  }
+
+  // NOVO: comando para obter dias da semana da semana atual em que o UID apareceu
+  if (strcmp(cmd, "get_uid_week_days") == 0) {
+    const char* uidJson = doc["uid"];
+    if (!uidJson || strlen(uidJson) == 0) {
+      Serial.println("Comando get_uid_week_days sem UID valido.");
+      return;
+    }
+    Serial.print("Comando MQTT: get_uid_week_days para UID ");
+    Serial.println(uidJson);
+    publishDiasSemanaPorUidToMQTT(String(uidJson));
     return;
   }
 
@@ -980,7 +1226,7 @@ void registrarMovimentacao(const String &uidFuncionario,
   }
 
   if (appendLine(MOVIMENTACOES_FILE, linha)) {
-    Serial.println("Movimentacao registrada: " + linha);
+    Serial.println("Movimentacao registrado: " + linha);
   } else {
     Serial.println("ERRO ao registrar movimentacao em MOVIMENTACOES_FILE.");
   }
@@ -1539,7 +1785,8 @@ void setup() {
     "'e' = iniciar fluxo de ENTRADA (USUARIO -> FUNCIONARIO) \n"
     "'s' = iniciar fluxo de SAIDA   (FUNCIONARIO -> USUARIO) \n"
     "'d' = deletar UID \n"
-    "'m' = listar movimentacoes + enviar historico via MQTT"
+    "'m' = listar movimentacoes + enviar historico via MQTT \n"
+    "'h' = consultar dias da semana de movimentacao de um UID (somente semana atual) \n"
   ));
 
   filaCartoes = xQueueCreate(8, sizeof(String));
@@ -1606,6 +1853,11 @@ void loop() {
       uid.trim();
       uid.toLowerCase();
       deleteCard(uid);
+    }
+
+    // NOVO: comando Serial para testar a mesma lógica
+    if (c == 'h' || c == 'H') {
+      consultarDiasSemanaPorUidSerial();
     }
 
     if (c == 'e' || c == 'E') {
