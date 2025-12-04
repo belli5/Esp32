@@ -35,7 +35,7 @@ import {
   EmptyLog,
 } from "./dashboard.styles";
 
-const MQTT_URL = "ws://172.20.10.4:9001";
+const MQTT_URL = "ws://172.20.10.2:9001";
 
 const diasOrdem = ["Seg", "Ter", "Qua", "Qui", "Sex"];
 const mapDowToLabel = {

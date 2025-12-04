@@ -27,7 +27,7 @@ import {
   BackButton,
 } from "./saida.styles";
 
-const MQTT_URL = "ws://172.20.10.4:9001";
+const MQTT_URL = "ws://172.20.10.2:9001";
 const TOPIC_CMD = "portaria/comandos";
 const TOPIC_STATUS = "portaria/status";
 

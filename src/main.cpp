@@ -29,8 +29,8 @@ const char* ADMINS_FILE        = "/funcionarios.txt";
 const char* MOVIMENTACOES_FILE = "/movimentacoes.txt";
 
 // Configuração de WiFi e de Fuso
-#define WIFI_SSID "iPhone de Gabriel"
-#define WIFI_PASS "12345678"
+#define WIFI_SSID "iPhone de Gabriel Henriques"
+#define WIFI_PASS "bellibelli"
 
 const char* NTP_SERVER      = "pool.ntp.org";
 const long  GMT_OFFSET_SEC  = -3 * 3600;
@@ -65,7 +65,7 @@ String uidFuncionarioSaidaPendente;
 bool leituraHabilitada = false;
 
 // --------- MQTT CONFIG ---------
-const char* MQTT_BROKER       = "172.20.10.4";   // IP do PC com o broker
+const char* MQTT_BROKER       = "172.20.10.2";   // IP do PC com o broker
 const uint16_t MQTT_PORT      = 1883;
 const char* MQTT_CLIENT_ID    = "esp32-portaria-01";
 const char* MQTT_TOPIC_MOV    = "portaria/movimentacoes";  // eventos de entrada/saida
