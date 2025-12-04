@@ -270,7 +270,7 @@ export default function Dashboard() {
 
         {/* Resumo Semana */}
         <WeekSummaryCard>
-          <WeekSummaryTitle>Resumo da Semana</WeekSummaryTitle>
+          <WeekSummaryTitle>Resumo da Semana / ID selecionado: 9960d07a</WeekSummaryTitle>
 
           <WeekDaysRow>
             {semanaResumo.map((d) => (
