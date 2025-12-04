@@ -41,7 +41,7 @@ MFRC522DriverPinSimple ss_pin(5);
 MFRC522DriverSPI driver{ss_pin};
 MFRC522 mfrc522{driver};
 
-// Fila e semáforo (fila não usada no fluxo atual, mas deixada aqui)
+// Fila e semáforo
 QueueHandle_t filaCartoes = NULL;
 SemaphoreHandle_t semAcessoLiberado = NULL;
 
@@ -161,7 +161,7 @@ size_t countRegisteredAndShow(const char* fileName) {
 bool parseMovLine(const String &line,
                   String &uidFunc, String &uidUser,
                   String &hora, String &data,
-                  String &acao)   // 👈 novo
+                  String &acao)
 {
   String s = line;
   s.trim();
@@ -181,12 +181,12 @@ bool parseMovLine(const String &line,
   int lenTok  = padRecebeu.length();
 
   if (idxTok >= 0) {
-    acao = "recebeu";                // 👈 achou "recebeu"
+    acao = "recebeu";
   } else {
     idxTok = s.indexOf(padLiberou, secondDash);
     lenTok = padLiberou.length();
     if (idxTok < 0) return false;
-    acao = "liberou";                // 👈 achou "liberou"
+    acao = "liberou";
   }
 
   int uidUserStart = idxTok + lenTok;
@@ -236,7 +236,7 @@ void publishMovHistoryToMQTT() {
     line.trim();
     if (!line.length()) continue;
 
-    String func, user, hora, data, acao;   // 👈 agora tem acao
+    String func, user, hora, data, acao;
     if (!parseMovLine(line, func, user, hora, data, acao)) {
       Serial.println("Linha de movimentacao em formato inesperado, ignorando:");
       Serial.println(line);
@@ -246,7 +246,7 @@ void publishMovHistoryToMQTT() {
     String payload = "{";
     payload += "\"funcionario\":\"" + func + "\",";
     payload += "\"usuario\":\""     + user + "\",";
-    payload += "\"acao\":\""        + acao + "\",";  // 👈 AQUI
+    payload += "\"acao\":\""        + acao + "\",";
     payload += "\"data\":\""        + data + "\",";
     payload += "\"hora\":\""        + hora + "\"";
     payload += "}";
@@ -584,7 +584,7 @@ size_t listarAtrasosDepoisDe815() {
 
     if (idx == -1) {
       if (numUidsDia < MAX_UIDS_DIA) {
-        uidsDia[numUidsDia]      = uidUsuario;
+        uidsDia[numUidsDia]       = uidUsuario;
         horasPrimeira[numUidsDia] = horaLinha;
         numUidsDia++;
       }
@@ -614,7 +614,7 @@ size_t listarAtrasosDepoisDe815() {
   return totalAtrasados;
 }
 
-// Usuários que entraram e não saíram (contagem ímpar no dia)
+// Usuários que entraram e não saíram (recebeu/liberou)
 size_t listarUsuariosDentroHoje() {
   String dataHoje, horaAgora;
   if (!obterDataHoraAtual(dataHoje, horaAgora)) {
@@ -633,7 +633,6 @@ size_t listarUsuariosDentroHoje() {
   int contagens[MAX_UIDS_DIA];
   int numUidsDia = 0;
 
-  // Inicializa contagens
   for (int i = 0; i < MAX_UIDS_DIA; i++) {
     contagens[i] = 0;
   }
@@ -648,29 +647,21 @@ size_t listarUsuariosDentroHoje() {
       continue;
     }
 
-    // Só consideramos o dia atual
     if (dataLinha != dataHoje) continue;
 
-    // UID do usuário (segunda parte da linha)
     String uidUsuario = user;
     uidUsuario.trim();
     uidUsuario.toLowerCase();
 
-    // Garante que é um usuário (e não funcionário)
     if (!isRegistered(CARDS_FILE, uidUsuario)) {
       continue;
     }
 
-    // Descobre se a linha é de entrada ("recebeu") ou saída ("liberou")
     bool isEntrada = line.indexOf(" recebeu -") >= 0;
     bool isSaida   = line.indexOf(" liberou -") >= 0;
 
-    if (!isEntrada && !isSaida) {
-      // Linha em formato inesperado (ou outro tipo), ignora
-      continue;
-    }
+    if (!isEntrada && !isSaida) continue;
 
-    // Procura o UID no array
     int idx = -1;
     for (int i = 0; i < numUidsDia; i++) {
       if (uidsDia[i] == uidUsuario) {
@@ -679,35 +670,28 @@ size_t listarUsuariosDentroHoje() {
       }
     }
 
-    // Se ainda não existe, adiciona
     if (idx == -1) {
       if (numUidsDia < MAX_UIDS_DIA) {
         uidsDia[numUidsDia]   = uidUsuario;
-        contagens[numUidsDia] = 0;  // começa em zero
+        contagens[numUidsDia] = 0;
         idx = numUidsDia;
         numUidsDia++;
       } else {
-        // estourou limite de UIDs no dia — ignora o resto
         continue;
       }
     }
 
-    // Aplica a regra:
-    // - ENTRADA  -> +1
-    // - SAÍDA    -> -1 (sem ficar < 0, pra evitar bug de saída “extra”)
     if (isEntrada) {
       contagens[idx]++;
     } else if (isSaida) {
       if (contagens[idx] > 0) {
         contagens[idx]--;
       }
-      // se estiver 0 e chegar uma saída, simplesmente ignora (não deixa negativo)
     }
   }
 
   f.close();
 
-  // Quantidade total de pendências = soma de todos os contadores positivos
   size_t totalPendencias = 0;
   for (int i = 0; i < numUidsDia; i++) {
     if (contagens[i] > 0) {
@@ -720,7 +704,6 @@ size_t listarUsuariosDentroHoje() {
     return 0;
   }
 
-  // Agora imprime cada UID tantas vezes quanto seu contador
   for (int i = 0; i < numUidsDia; i++) {
     if (contagens[i] > 0) {
       for (int k = 0; k < contagens[i]; k++) {
@@ -823,7 +806,6 @@ void publishUsuariosDentroHojeToMQTT() {
     }
   }
 
-  // Monta JSON: { "context":"inside", "total":X, "itens":[ { "uid":"...", "count":N }, ... ] }
   String payload = "{";
   payload += "\"context\":\"inside\",";
   payload += "\"total\":" + String(totalPendencias) + ",";
@@ -848,7 +830,6 @@ void publishUsuariosDentroHojeToMQTT() {
 
   mqttClient.publish(MQTT_TOPIC_INSIDE, payload.c_str());
 }
-
 
 void reconnectMQTT() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -908,12 +889,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-    if (strcmp(cmd, "get_inside_today") == 0) {
+  if (strcmp(cmd, "get_inside_today") == 0) {
     Serial.println("Comando MQTT: get_inside_today -> enviando lista de usuarios dentro hoje");
     publishUsuariosDentroHojeToMQTT();
     return;
   }
-
 
   if (strcmp(cmd, "start_register") == 0 && tipo) {
 
@@ -930,22 +910,20 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     }
   }
 
-    // === NOVO: iniciar fluxo de ENTRADA via MQTT (USUARIO -> FUNCIONARIO) ===
+  // iniciar fluxo de ENTRADA via MQTT (USUARIO -> FUNCIONARIO)
   if (strcmp(cmd, "start_entrada") == 0) {
-    // configura o modo e libera leitura
-    modoAtual              = MODO_ENTRADA;
+    modoAtual                = MODO_ENTRADA;
     aguardandoSegundoEntrada = false;
     aguardandoSegundoSaida   = false;
     leituraHabilitada        = true;
 
     Serial.println("MQTT: fluxo de ENTRADA iniciado (USUARIO -> FUNCIONARIO).");
 
-    // avisa o front que está esperando o cartão do responsável (usuário)
     if (mqttClient.connected()) {
       String payload = "{";
       payload += "\"context\":\"entrada\",";
-      payload += "\"step\":\"parent\",";    // etapa do responsável
-      payload += "\"status\":\"waiting\"";  // aguardando cartão
+      payload += "\"step\":\"parent\",";
+      payload += "\"status\":\"waiting\"";
       payload += "}";
       mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
     }
@@ -953,9 +931,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // === NOVO: iniciar fluxo de SAÍDA via MQTT (FUNCIONARIO -> USUARIO) ===
+  // iniciar fluxo de SAÍDA via MQTT (FUNCIONARIO -> USUARIO)
   if (strcmp(cmd, "start_saida") == 0) {
-    // configura o modo e libera leitura
     modoAtual                = MODO_SAIDA;
     aguardandoSegundoEntrada = false;
     aguardandoSegundoSaida   = false;
@@ -963,12 +940,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
     Serial.println("MQTT: fluxo de SAIDA iniciado (FUNCIONARIO -> USUARIO).");
 
-    // avisa o front que está esperando o cartão do funcionário
     if (mqttClient.connected()) {
       String payload = "{";
-      payload += "\"context\":\"saida\",";   // 👈 contexto diferente
-      payload += "\"step\":\"employee\",";   // primeiro é o funcionário
-      payload += "\"status\":\"waiting\"";   // aguardando cartão
+      payload += "\"context\":\"saida\",";
+      payload += "\"step\":\"employee\",";
+      payload += "\"status\":\"waiting\"";
       payload += "}";
       mqttClient.publish(MQTT_TOPIC_STATUS, payload.c_str());
     }
@@ -1010,13 +986,13 @@ void registrarMovimentacao(const String &uidFuncionario,
   }
 
   if (mqttClient.connected()) {
-  String payload = "{";
-  payload += "\"funcionario\":\"" + uidFuncionario + "\",";
-  payload += "\"usuario\":\""     + uidUsuario     + "\",";
-  payload += "\"acao\":\""        + tipo           + "\",";  // "entrada" ou "saída"
-  payload += "\"data\":\""        + dataStr        + "\",";
-  payload += "\"hora\":\""        + horaStr        + "\"";
-  payload += "}";
+    String payload = "{";
+    payload += "\"funcionario\":\"" + uidFuncionario + "\",";
+    payload += "\"usuario\":\""     + uidUsuario     + "\",";
+    payload += "\"acao\":\""        + tipo           + "\",";
+    payload += "\"data\":\""        + dataStr        + "\",";
+    payload += "\"hora\":\""        + horaStr        + "\"";
+    payload += "}";
 
     bool ok = mqttClient.publish(MQTT_TOPIC_MOV, payload.c_str());
     if (ok) {
@@ -1051,7 +1027,6 @@ void processarEntradaCartao(const String &uidLido) {
       digitalWrite(LED_RED, LOW);
       leituraHabilitada = false;
 
-      // 🔴 NOVO: avisa o front que a etapa do responsável deu erro
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"entrada\",";
@@ -1072,7 +1047,6 @@ void processarEntradaCartao(const String &uidLido) {
       digitalWrite(LED_RED, LOW);
       leituraHabilitada = false;
 
-      // 🔴 NOVO
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"entrada\",";
@@ -1093,7 +1067,6 @@ void processarEntradaCartao(const String &uidLido) {
       digitalWrite(LED_RED, LOW);
       leituraHabilitada = false;
 
-      // 🔴 NOVO
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"entrada\",";
@@ -1118,7 +1091,6 @@ void processarEntradaCartao(const String &uidLido) {
     delay(300);
     digitalWrite(LED_YELLOW, LOW);
 
-    // 🟢 NOVO: parent SUCCESS + employee WAITING
     if (mqttClient.connected()) {
       // etapa do responsável concluída
       String payload1 = "{";
@@ -1152,7 +1124,6 @@ void processarEntradaCartao(const String &uidLido) {
       aguardandoSegundoEntrada = false;
       leituraHabilitada        = false;
 
-      // 🔴 NOVO: erro na etapa do funcionário
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"entrada\",";
@@ -1174,7 +1145,6 @@ void processarEntradaCartao(const String &uidLido) {
       aguardandoSegundoEntrada = false;
       leituraHabilitada        = false;
 
-      // 🔴 NOVO
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"entrada\",";
@@ -1196,7 +1166,6 @@ void processarEntradaCartao(const String &uidLido) {
       aguardandoSegundoEntrada = false;
       leituraHabilitada        = false;
 
-      // 🔴 NOVO
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"entrada\",";
@@ -1218,7 +1187,6 @@ void processarEntradaCartao(const String &uidLido) {
       aguardandoSegundoEntrada = false;
       leituraHabilitada        = false;
 
-      // 🔴 NOVO
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"entrada\",";
@@ -1241,7 +1209,6 @@ void processarEntradaCartao(const String &uidLido) {
     Serial.println("✅ Combinacao valida para ENTRADA (USUARIO + FUNCIONARIO).");
     registrarMovimentacao(uidFuncionario, uidUsuario, "entrada");
 
-    // 🟢 NOVO: funcionário OK
     if (mqttClient.connected()) {
       String payload = "{";
       payload += "\"context\":\"entrada\",";
@@ -1288,7 +1255,6 @@ void processarSaidaCartao(const String &uidLido) {
       digitalWrite(LED_RED, LOW);
       leituraHabilitada = false;
 
-      // 🔴 avisa o front: erro na etapa do funcionário
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"saida\",";
@@ -1309,7 +1275,6 @@ void processarSaidaCartao(const String &uidLido) {
       digitalWrite(LED_RED, LOW);
       leituraHabilitada = false;
 
-      // 🔴 erro na etapa do funcionário
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"saida\",";
@@ -1330,7 +1295,6 @@ void processarSaidaCartao(const String &uidLido) {
       digitalWrite(LED_RED, LOW);
       leituraHabilitada = false;
 
-      // 🔴 erro na etapa do funcionário
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"saida\",";
@@ -1355,7 +1319,6 @@ void processarSaidaCartao(const String &uidLido) {
     delay(300);
     digitalWrite(LED_YELLOW, LOW);
 
-    // 🟢 avisa o front: funcionário OK, agora esperar o responsável
     if (mqttClient.connected()) {
       // funcionário OK
       String payload1 = "{";
@@ -1389,7 +1352,6 @@ void processarSaidaCartao(const String &uidLido) {
       aguardandoSegundoSaida = false;
       leituraHabilitada      = false;
 
-      // 🔴 erro na etapa do responsável
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"saida\",";
@@ -1411,7 +1373,6 @@ void processarSaidaCartao(const String &uidLido) {
       aguardandoSegundoSaida = false;
       leituraHabilitada      = false;
 
-      // 🔴 erro na etapa do responsável
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"saida\",";
@@ -1433,7 +1394,6 @@ void processarSaidaCartao(const String &uidLido) {
       aguardandoSegundoSaida = false;
       leituraHabilitada      = false;
 
-      // 🔴 erro na etapa do responsável
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"saida\",";
@@ -1455,7 +1415,6 @@ void processarSaidaCartao(const String &uidLido) {
       aguardandoSegundoSaida = false;
       leituraHabilitada      = false;
 
-      // 🔴 erro na etapa do responsável
       if (mqttClient.connected()) {
         String payload = "{";
         payload += "\"context\":\"saida\",";
@@ -1478,7 +1437,6 @@ void processarSaidaCartao(const String &uidLido) {
     Serial.println("✅ Combinacao valida para SAIDA (FUNCIONARIO + USUARIO).");
     registrarMovimentacao(uidFuncionario, uidUsuario, "saída");
 
-    // 🟢 avisa o front que o responsável foi validado
     if (mqttClient.connected()) {
       String payload = "{";
       payload += "\"context\":\"saida\",";
@@ -1520,6 +1478,27 @@ void checkCardRegistered(const String &uidString) {
   }
 }
 
+// ---------- TASK DE PROCESSAMENTO DE CARTOES (CONSUMIDORA DA FILA) ----------
+void taskProcessaCartoes(void *pvParameters) {
+  (void) pvParameters;
+  String uid;
+
+  for (;;) {
+    if (filaCartoes == NULL) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+
+    if (xQueueReceive(filaCartoes, &uid, portMAX_DELAY) == pdTRUE) {
+      if (modoAtual == MODO_ENTRADA) {
+        processarEntradaCartao(uid);
+      } else {
+        processarSaidaCartao(uid);
+      }
+    }
+  }
+}
+
 void setup() {
   Serial.begin(9600);
   while (!Serial);
@@ -1556,7 +1535,7 @@ void setup() {
     "'u' = quantidade + UIDs de usuarios \n"
     "'f' = quantidade + UIDs de admins \n"
     "'t' = usuarios atrasados (primeira entrada apos 08:15 hoje) \n"
-    "'p' = usuarios que estao dentro (registros impares hoje) \n"
+    "'p' = usuarios que estao dentro (baseado em entradas/saidas) \n"
     "'e' = iniciar fluxo de ENTRADA (USUARIO -> FUNCIONARIO) \n"
     "'s' = iniciar fluxo de SAIDA   (FUNCIONARIO -> USUARIO) \n"
     "'d' = deletar UID \n"
@@ -1565,7 +1544,20 @@ void setup() {
 
   filaCartoes = xQueueCreate(8, sizeof(String));
   if (filaCartoes == NULL) {
-    Serial.println("Aviso: filaCartoes nao criada (nao usada no fluxo atual).");
+    Serial.println("ERRO: nao foi possivel criar filaCartoes!");
+  } else {
+    Serial.println("filaCartoes criada e pronta para uso.");
+    BaseType_t ret = xTaskCreate(
+      taskProcessaCartoes,
+      "TaskProcessaCartoes",
+      4096,
+      NULL,
+      1,
+      NULL
+    );
+    if (ret != pdPASS) {
+      Serial.println("ERRO: nao foi possivel criar TaskProcessaCartoes!");
+    }
   }
 
   semAcessoLiberado = xSemaphoreCreateBinary();
@@ -1595,13 +1587,12 @@ void loop() {
     if (c == 'u' || c == 'U') countRegisteredAndShow(CARDS_FILE);
     if (c == 'f' || c == 'F') countRegisteredAndShow(ADMINS_FILE);
     if (c == 't' || c == 'T') listarAtrasosDepoisDe815();
-        if (c == 'p' || c == 'P') {
+    if (c == 'p' || c == 'P') {
       listarUsuariosDentroHoje();  // continua aparecendo na Serial
       if (mqttClient.connected()) {
         publishUsuariosDentroHojeToMQTT();  // e manda pro front também
       }
     }
-
 
     if (c == 'm' || c == 'M') {
       listMovimentacoes();
@@ -1634,7 +1625,7 @@ void loop() {
     }
   }
 
-  // Leitura de cartões só acontece se habilitada pelo terminal
+  // Leitura de cartões só acontece se habilitada pelo terminal/MQTT
   if (!leituraHabilitada) return;
 
   if (!mfrc522.PICC_IsNewCardPresent()) return;
@@ -1648,10 +1639,20 @@ void loop() {
   Serial.print("UID em texto: ");
   Serial.println(uidString);
 
-  if (modoAtual == MODO_ENTRADA) {
-    processarEntradaCartao(uidString);
+  if (filaCartoes != NULL) {
+    String copia = uidString;
+    if (xQueueSend(filaCartoes, &copia, pdMS_TO_TICKS(100)) != pdTRUE) {
+      Serial.println("Aviso: filaCartoes cheia, UID descartado.");
+    } else {
+      Serial.println("UID enviado para fila de processamento.");
+    }
   } else {
-    processarSaidaCartao(uidString);
+    // fallback de segurança: se a fila não existir, mantém comportamento direto
+    if (modoAtual == MODO_ENTRADA) {
+      processarEntradaCartao(uidString);
+    } else {
+      processarSaidaCartao(uidString);
+    }
   }
 
   mfrc522.PICC_HaltA();
